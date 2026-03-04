@@ -56,14 +56,15 @@ export interface Message {
   richCard?: RichCard;
 }
 
-export type RichCardType = 
+export type RichCardType =
   | 'place'
   | 'flight'
   | 'hotel'
   | 'outfit'
   | 'colorSeason'
   | 'fitnessClass'
-  | 'reminder';
+  | 'reminder'
+  | 'wardrobeItem';
 
 export interface RichCard {
   type: RichCardType;

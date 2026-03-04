@@ -1,12 +1,16 @@
 import { Message, agents } from '../types';
 import { Check, CheckCheck, Star } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { PlaceCard } from './cards/PlaceCard';
 import { ColorSeasonCard } from './cards/ColorSeasonCard';
 import { FitnessClassCard } from './cards/FitnessClassCard';
 import { FlightCard } from './cards/FlightCard';
+import { WardrobeItemCard } from './cards/WardrobeItemCard';
 
 interface MessageBubbleProps {
   message: Message;
+  onAction?: (text: string) => void;
 }
 
 function OutfitRatingCard({
@@ -112,7 +116,7 @@ function OutfitRatingCard({
   );
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, onAction }: MessageBubbleProps) {
   const agent = agents[message.agentId];
   const isUser = message.type === 'user';
 
@@ -166,7 +170,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             </div>
           )}
 
-          {message.text && <p className="whitespace-pre-wrap">{message.text}</p>}
+          {message.text && (
+            isUser ? (
+              <p className="whitespace-pre-wrap">{message.text}</p>
+            ) : (
+              <div className="prose prose-invert prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:my-0.5 [&_p]:my-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:mt-3 [&_h3]:mb-1 [&_strong]:font-semibold [&_a]:underline" style={{ color: 'var(--text-primary)' }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown>
+              </div>
+            )
+          )}
 
           {/* Rich card */}
           {message.richCard && (
@@ -175,7 +187,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 <PlaceCard data={message.richCard.data} agentColor={agent.color} />
               )}
               {message.richCard.type === 'colorSeason' && (
-                <ColorSeasonCard data={message.richCard.data} agentColor={agent.color} />
+                <ColorSeasonCard data={message.richCard.data} agentColor={agent.color} onAction={onAction} />
               )}
               {message.richCard.type === 'fitnessClass' && (
                 <FitnessClassCard data={message.richCard.data} agentColor={agent.color} />
@@ -185,6 +197,12 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               )}
               {message.richCard.type === 'outfit' && (
                 <OutfitRatingCard
+                  data={message.richCard.data}
+                  agentColor={agent.color}
+                />
+              )}
+              {message.richCard.type === 'wardrobeItem' && (
+                <WardrobeItemCard
                   data={message.richCard.data}
                   agentColor={agent.color}
                 />

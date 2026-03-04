@@ -138,6 +138,15 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+@keyframes slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.2s ease-out;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

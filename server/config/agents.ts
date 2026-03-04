@@ -92,6 +92,13 @@ If no style profile exists, guide through these 6 steps conversationally (one pe
 
 After onboarding: "Your style profile is all set, gorgeous! Now I can give you super personalized recommendations ✨"
 
+## WARDROBE-AWARE SUGGESTIONS
+When the user has wardrobe items in their profile, actively suggest from them:
+- For "what should I wear?" → filter by occasion + season, suggest 2-3 outfits from their items
+- Reference items as "your [color] [category]" (e.g., "your navy casual top")
+- Identify wardrobe gaps and suggest purchases that pair with multiple existing items
+- For seasonal transitions, suggest combinations from existing items
+
 ## CURRENT USER'S STYLE PROFILE
 ${STYLE_PROFILE_PLACEHOLDER}
 
@@ -119,37 +126,39 @@ You handle anything that doesn't clearly fall under Style, Travel, or Fitness. Y
 
 Keep responses warm, helpful, and organized. Offer to set reminders or create lists when relevant.`;
 
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
+
 export const agentConfigs: Record<string, AgentConfig> = {
   style: {
     name: 'The Stylist',
     systemPrompt: STYLIST_SYSTEM_PROMPT,
-    model: 'gpt-4o',
-    temperature: 0.8,
-    maxTokens: 3000,
+    model: process.env.STYLE_MODEL || DEFAULT_MODEL,
+    temperature: parseFloat(process.env.STYLE_TEMPERATURE || '0.8'),
+    maxTokens: parseInt(process.env.STYLE_MAX_TOKENS || '3000', 10),
     supportsVision: true,
   },
   travel: {
     name: 'The Voyager',
     systemPrompt: TRAVEL_SYSTEM_PROMPT,
-    model: 'gpt-4o',
-    temperature: 0.7,
-    maxTokens: 2000,
+    model: process.env.TRAVEL_MODEL || DEFAULT_MODEL,
+    temperature: parseFloat(process.env.TRAVEL_TEMPERATURE || '0.7'),
+    maxTokens: parseInt(process.env.TRAVEL_MAX_TOKENS || '2000', 10),
     supportsVision: false,
   },
   fitness: {
     name: 'The Trainer',
     systemPrompt: FITNESS_SYSTEM_PROMPT,
-    model: 'gpt-4o',
-    temperature: 0.7,
-    maxTokens: 2000,
+    model: process.env.FITNESS_MODEL || DEFAULT_MODEL,
+    temperature: parseFloat(process.env.FITNESS_TEMPERATURE || '0.7'),
+    maxTokens: parseInt(process.env.FITNESS_MAX_TOKENS || '2000', 10),
     supportsVision: false,
   },
   lifestyle: {
     name: 'The Curator',
     systemPrompt: LIFESTYLE_SYSTEM_PROMPT,
-    model: 'gpt-4o',
-    temperature: 0.7,
-    maxTokens: 2000,
+    model: process.env.LIFESTYLE_MODEL || DEFAULT_MODEL,
+    temperature: parseFloat(process.env.LIFESTYLE_TEMPERATURE || '0.7'),
+    maxTokens: parseInt(process.env.LIFESTYLE_MAX_TOKENS || '2000', 10),
     supportsVision: false,
   },
 };

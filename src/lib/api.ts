@@ -1,6 +1,7 @@
 import type { AgentId, Message, RichCard } from '../app/types';
 import { useChatStore } from '../stores/chat';
-import { useStyleStore } from '../stores/style';
+import { useStyleStore, type StyleProfile } from '../stores/style';
+import { getUserId } from './session';
 
 /**
  * Convert store messages to the shape the API expects.
@@ -28,35 +29,72 @@ function toApiMessages(messages: Message[]) {
   });
 }
 
+/**
+ * Build a metadata-only profile for the chat system prompt.
+ * Strips imageUrl/thumbnailUrl to avoid wasting tokens.
+ */
+function buildChatProfile(profile: StyleProfile) {
+  return {
+    bodyType: profile.bodyType,
+    skinTone: profile.skinTone,
+    styleEssences: profile.styleEssences,
+    budgetRange: profile.budgetRange,
+    occasions: profile.occasions,
+    onboardingComplete: profile.onboardingComplete,
+    onboardingStep: profile.onboardingStep,
+    wardrobe: {
+      totalItems: profile.wardrobeItems.length,
+      items: profile.wardrobeItems.map(({ id, category, color, colorHex, style, seasons, occasions, pairsWith }) =>
+        ({ id, category, color, colorHex, style, seasons, occasions, pairsWith })),
+    },
+  };
+}
+
 /** Read an SSE stream and push tokens into the store */
 async function readStream(res: Response, agentId: AgentId) {
   const store = useChatStore.getState();
-  const reader = res.body!.getReader();
+
+  if (!res.body) {
+    store.appendToLastBot(agentId, 'Sorry, I couldn\'t get a response. Please try again!');
+    return;
+  }
+
+  const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop()!;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop()!;
 
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try {
-        const data = JSON.parse(line.slice(6));
-        if (data.token) {
-          store.appendToLastBot(agentId, data.token);
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.token) {
+            store.appendToLastBot(agentId, data.token);
+          }
+          if (data.error) {
+            // Show user-friendly message instead of raw API errors
+            const friendly = data.error.includes('unsupported image')
+              ? 'That image format isn\'t supported. Please try a JPEG or PNG photo!'
+              : data.error.includes('Could not process')
+                ? 'I couldn\'t process that image. Could you try a different photo?'
+                : 'Sorry, something went wrong. Please try again!';
+            store.appendToLastBot(agentId, `\n\n${friendly}`);
+          }
+        } catch {
+          // skip malformed JSON
         }
-        if (data.error) {
-          store.appendToLastBot(agentId, `\n\n[Error: ${data.error}]`);
-        }
-      } catch {
-        // skip malformed JSON
       }
     }
+  } catch {
+    store.appendToLastBot(agentId, '\n\nConnection interrupted. Please try again!');
   }
 }
 
@@ -70,7 +108,8 @@ async function readStream(res: Response, agentId: AgentId) {
 export async function sendMessage(
   agentId: AgentId,
   text: string,
-  imageBase64?: string
+  imageBase64?: string,
+  analysisType?: string
 ) {
   const store = useChatStore.getState();
   const effectiveAgent = agentId === 'all' ? 'lifestyle' : agentId;
@@ -99,25 +138,28 @@ export async function sendMessage(
 
   try {
     const styleProfile =
-      effectiveAgent === 'style' ? useStyleStore.getState().profile : undefined;
+      effectiveAgent === 'style' ? buildChatProfile(useStyleStore.getState().profile) : undefined;
 
     const allMessages = store.getMessages(agentId);
-    // Exclude the empty bot placeholder
-    const apiMessages = toApiMessages(
-      allMessages.filter((m) => m.text.length > 0 || m.imageUrl)
-    );
+    // Exclude the empty bot placeholder, limit to last 20 messages to prevent token overflow
+    const relevantMessages = allMessages.filter((m) => m.text.length > 0 || m.imageUrl);
+    const apiMessages = toApiMessages(relevantMessages.slice(-20));
 
     // If this is the style agent and an image was sent, run structured analysis
     // in parallel with the streaming chat response
-    const analysisPromise =
-      effectiveAgent === 'style' && imageBase64
-        ? runStyleAnalysis(imageBase64, text, agentId)
-        : null;
+    let analysisPromise: Promise<RichCard | null> | null = null;
+    if (effectiveAgent === 'style' && imageBase64) {
+      store.setAnalyzing(agentId, true);
+      analysisPromise = runStyleAnalysis(imageBase64, text, agentId, analysisType);
+    }
 
     // Stream the conversational response
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-User-Id': getUserId(),
+      },
       body: JSON.stringify({
         agentId: effectiveAgent,
         messages: apiMessages,
@@ -133,9 +175,13 @@ export async function sendMessage(
 
     // If analysis was running, wait for it and attach the card
     if (analysisPromise) {
-      const richCard = await analysisPromise;
-      if (richCard) {
-        store.setRichCardOnLastBot(agentId, richCard);
+      try {
+        const richCard = await analysisPromise;
+        if (richCard) {
+          store.setRichCardOnLastBot(agentId, richCard);
+        }
+      } finally {
+        store.setAnalyzing(agentId, false);
       }
     }
   } catch (err: any) {
@@ -157,26 +203,34 @@ export async function sendMessage(
 async function runStyleAnalysis(
   imageBase64: string,
   userText: string,
-  agentId: AgentId
+  agentId: AgentId,
+  explicitType?: string
 ): Promise<RichCard | null> {
-  // Decide analysis type from user intent
-  const lower = userText.toLowerCase();
+  // Use explicit type if provided (from intent chips), otherwise infer from text
   let type: 'skin_tone' | 'outfit_rating' | 'clothing_tag' = 'skin_tone';
-  if (lower.includes('outfit') || lower.includes('rate') || lower.includes('wearing')) {
-    type = 'outfit_rating';
-  } else if (
-    lower.includes('wardrobe') ||
-    lower.includes('clothing') ||
-    lower.includes('tag') ||
-    lower.includes('item')
-  ) {
-    type = 'clothing_tag';
+  if (explicitType && ['skin_tone', 'outfit_rating', 'clothing_tag'].includes(explicitType)) {
+    type = explicitType as typeof type;
+  } else {
+    const lower = userText.toLowerCase();
+    if (lower.includes('outfit') || lower.includes('rate') || lower.includes('wearing') || lower.includes('look')) {
+      type = 'outfit_rating';
+    } else if (
+      lower.includes('wardrobe') ||
+      lower.includes('clothing') ||
+      lower.includes('tag') ||
+      lower.includes('item')
+    ) {
+      type = 'clothing_tag';
+    }
   }
 
   try {
     const res = await fetch('/api/style/analyze', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-User-Id': getUserId(),
+      },
       body: JSON.stringify({ image: imageBase64, type }),
     });
 
@@ -199,6 +253,7 @@ async function runStyleAnalysis(
           season: result.season,
           colors: result.bestColors,
           metals: result.bestMetals,
+          avoidColors: result.avoidColors,
         },
       };
     }
@@ -211,10 +266,8 @@ async function runStyleAnalysis(
     }
 
     if (type === 'clothing_tag' && result?.category) {
-      // Auto-add to wardrobe
-      useStyleStore.getState().addWardrobeItem({
-        id: crypto.randomUUID(),
-        imageUrl: imageBase64,
+      // Upload to Cloudinary via server + add to wardrobe
+      const item = await useStyleStore.getState().uploadAndAddItem(imageBase64, {
         category: result.category,
         color: result.color,
         colorHex: result.colorHex,
@@ -222,8 +275,22 @@ async function runStyleAnalysis(
         seasons: result.seasons,
         occasions: result.occasions,
         pairsWith: result.pairsWith,
-        addedAt: new Date().toISOString(),
       });
+
+      return {
+        type: 'wardrobeItem',
+        data: {
+          category: result.category,
+          color: result.color,
+          colorHex: result.colorHex,
+          style: result.style,
+          seasons: result.seasons,
+          occasions: result.occasions,
+          pairsWith: result.pairsWith,
+          imageUrl: item?.imageUrl,
+          thumbnailUrl: item?.thumbnailUrl,
+        },
+      };
     }
 
     return null;

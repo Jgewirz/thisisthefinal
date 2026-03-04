@@ -4,6 +4,7 @@ import type { AgentId, Message, RichCard } from '../app/types';
 interface AgentState {
   messages: Message[];
   isStreaming: boolean;
+  isAnalyzing: boolean;
 }
 
 interface ChatStore {
@@ -12,12 +13,14 @@ interface ChatStore {
   appendToLastBot: (agentId: AgentId, token: string) => void;
   setRichCardOnLastBot: (agentId: AgentId, richCard: RichCard) => void;
   setStreaming: (agentId: AgentId, streaming: boolean) => void;
+  setAnalyzing: (agentId: AgentId, analyzing: boolean) => void;
   getMessages: (agentId: AgentId) => Message[];
 }
 
 const defaultAgentState = (): AgentState => ({
   messages: [],
   isStreaming: false,
+  isAnalyzing: false,
 });
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -86,6 +89,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         [agentId]: {
           ...state.agents[agentId],
           isStreaming: streaming,
+        },
+      },
+    })),
+
+  setAnalyzing: (agentId, analyzing) =>
+    set((state) => ({
+      agents: {
+        ...state.agents,
+        [agentId]: {
+          ...state.agents[agentId],
+          isAnalyzing: analyzing,
         },
       },
     })),

@@ -1,9 +1,10 @@
-import { Search, MoreVertical, Loader2 } from 'lucide-react';
+import { Search, MoreVertical, Loader2, ImageIcon, UserCircle } from 'lucide-react';
 import { AgentId, agents, Message } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
+import { StyleProfilePanel } from './StyleProfilePanel';
 import { useChatStore } from '../../stores/chat';
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo, useRef, useEffect, useState } from 'react';
 import { sendMessage } from '../../lib/api';
 
 interface ChatViewProps {
@@ -12,8 +13,9 @@ interface ChatViewProps {
 
 export function ChatView({ agentId }: ChatViewProps) {
   const agent = agents[agentId];
-  const { messages, isStreaming } = useChatStore((s) => s.agents[agentId]);
+  const { messages, isStreaming, isAnalyzing } = useChatStore((s) => s.agents[agentId]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -53,9 +55,9 @@ export function ChatView({ agentId }: ChatViewProps) {
     return groups;
   }, [messages]);
 
-  const handleSend = (text: string, imageBase64?: string) => {
+  const handleSend = (text: string, imageBase64?: string, analysisType?: string) => {
     if (isStreaming) return;
-    sendMessage(agentId, text, imageBase64);
+    sendMessage(agentId, text, imageBase64, analysisType);
   };
 
   return (
@@ -86,6 +88,16 @@ export function ChatView({ agentId }: ChatViewProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {agentId === 'style' && (
+            <button
+              onClick={() => setProfileOpen(true)}
+              className="p-2 rounded-lg hover:bg-opacity-50 transition-colors"
+              style={{ backgroundColor: 'transparent' }}
+              title="Style Profile"
+            >
+              <UserCircle size={20} style={{ color: agent.color }} />
+            </button>
+          )}
           <button
             className="p-2 rounded-lg hover:bg-opacity-50 transition-colors"
             style={{ backgroundColor: 'transparent' }}
@@ -157,7 +169,7 @@ export function ChatView({ agentId }: ChatViewProps) {
                 {/* Messages */}
                 <div className="space-y-4">
                   {group.messages.map((message) => (
-                    <MessageBubble key={message.id} message={message} />
+                    <MessageBubble key={message.id} message={message} onAction={(text) => handleSend(text)} />
                   ))}
                 </div>
               </div>
@@ -178,12 +190,36 @@ export function ChatView({ agentId }: ChatViewProps) {
                 </div>
               </div>
             )}
+
+            {/* Image analysis indicator */}
+            {isAnalyzing && !isStreaming && (
+              <div className="flex justify-start">
+                <div
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full"
+                  style={{ backgroundColor: 'var(--bg-surface)' }}
+                >
+                  <ImageIcon
+                    size={14}
+                    className="animate-pulse"
+                    style={{ color: agent.color }}
+                  />
+                  <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    Analyzing image...
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {/* Chat Input */}
       <ChatInput agentId={agentId} onSend={handleSend} disabled={isStreaming} />
+
+      {/* Style Profile Panel */}
+      {agentId === 'style' && (
+        <StyleProfilePanel open={profileOpen} onClose={() => setProfileOpen(false)} />
+      )}
     </div>
   );
 }

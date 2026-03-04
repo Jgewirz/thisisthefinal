@@ -19,11 +19,13 @@ export async function* streamChat(
   const systemPrompt = buildSystemPrompt(agentId, styleProfile);
 
   const openaiMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: systemPrompt },
-    ...messages.map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    })),
+    { role: 'system' as const, content: systemPrompt },
+    ...messages.map((m): OpenAI.Chat.Completions.ChatCompletionMessageParam => {
+      if (m.role === 'assistant') {
+        return { role: 'assistant', content: typeof m.content === 'string' ? m.content : '' };
+      }
+      return { role: 'user', content: m.content as any };
+    }),
   ];
 
   const stream = await openai.chat.completions.create({
@@ -79,7 +81,7 @@ export async function analyzeImage(
   };
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o',
+    model: process.env.STYLE_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-4o',
     messages: [
       {
         role: 'user',
@@ -89,12 +91,23 @@ export async function analyzeImage(
         ],
       },
     ],
-    temperature: 0.3,
+    temperature: parseFloat(process.env.STYLE_VISION_TEMPERATURE || '0.3'),
     max_tokens: 1000,
   });
 
   const text = response.choices[0]?.message?.content ?? '{}';
   // Extract JSON from possible markdown code fences
   const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, text];
-  return JSON.parse(jsonMatch[1]!.trim());
+  const raw = jsonMatch[1]!.trim();
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Try to find a JSON object in the response text
+    const objectMatch = raw.match(/\{[\s\S]*\}/);
+    if (objectMatch) {
+      return JSON.parse(objectMatch[0]);
+    }
+    throw new Error('Failed to parse image analysis response as JSON');
+  }
 }

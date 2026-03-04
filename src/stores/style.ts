@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getUserId } from '../lib/session';
 
 export interface StyleProfile {
   bodyType: string | null;
@@ -21,6 +22,7 @@ export interface StyleProfile {
 export interface WardrobeItem {
   id: string;
   imageUrl: string;
+  thumbnailUrl?: string;
   category: string;
   color: string;
   colorHex: string;
@@ -33,9 +35,14 @@ export interface WardrobeItem {
 
 interface StyleStore {
   profile: StyleProfile;
+  wardrobeLoaded: boolean;
+  wardrobeSyncing: boolean;
   updateProfile: (updates: Partial<StyleProfile>) => void;
   setSkinTone: (skinTone: StyleProfile['skinTone']) => void;
   addWardrobeItem: (item: WardrobeItem) => void;
+  uploadAndAddItem: (base64: string, metadata: Omit<WardrobeItem, 'id' | 'imageUrl' | 'thumbnailUrl' | 'addedAt'>) => Promise<WardrobeItem | null>;
+  loadWardrobe: () => Promise<void>;
+  removeWardrobeItem: (id: string) => Promise<void>;
   advanceOnboarding: () => void;
   completeOnboarding: () => void;
   resetProfile: () => void;
@@ -57,6 +64,8 @@ export const useStyleStore = create<StyleStore>()(
   persist(
     (set, get) => ({
       profile: { ...defaultProfile },
+      wardrobeLoaded: false,
+      wardrobeSyncing: false,
 
       updateProfile: (updates) =>
         set((state) => ({
@@ -76,6 +85,74 @@ export const useStyleStore = create<StyleStore>()(
           },
         })),
 
+      uploadAndAddItem: async (base64, metadata) => {
+        set({ wardrobeSyncing: true });
+        try {
+          const res = await fetch('/api/style/wardrobe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-User-Id': getUserId(),
+            },
+            body: JSON.stringify({
+              image: base64,
+              ...metadata,
+            }),
+          });
+
+          if (!res.ok) return null;
+          const { item } = await res.json();
+
+          set((state) => ({
+            profile: {
+              ...state.profile,
+              wardrobeItems: [...state.profile.wardrobeItems, item],
+            },
+          }));
+
+          return item;
+        } catch {
+          return null;
+        } finally {
+          set({ wardrobeSyncing: false });
+        }
+      },
+
+      loadWardrobe: async () => {
+        try {
+          const res = await fetch('/api/style/wardrobe', {
+            headers: { 'X-User-Id': getUserId() },
+          });
+          if (!res.ok) return;
+          const { items } = await res.json();
+
+          set((state) => ({
+            profile: { ...state.profile, wardrobeItems: items },
+            wardrobeLoaded: true,
+          }));
+        } catch {
+          // Silent fail — localStorage items remain
+        }
+      },
+
+      removeWardrobeItem: async (id: string) => {
+        try {
+          await fetch(`/api/style/wardrobe/${id}`, {
+            method: 'DELETE',
+            headers: { 'X-User-Id': getUserId() },
+          });
+        } catch {
+          // Continue with local removal even if server fails
+        }
+
+        set((state) => ({
+          profile: {
+            ...state.profile,
+            wardrobeItems: state.profile.wardrobeItems.filter((i) => i.id !== id),
+          },
+        }));
+      },
+
       advanceOnboarding: () =>
         set((state) => ({
           profile: {
@@ -93,14 +170,17 @@ export const useStyleStore = create<StyleStore>()(
           },
         })),
 
-      resetProfile: () => set({ profile: { ...defaultProfile } }),
+      resetProfile: () => set({ profile: { ...defaultProfile }, wardrobeLoaded: false }),
 
       syncToServer: async () => {
         const { profile } = get();
         try {
           await fetch('/api/style/profile', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-User-Id': getUserId(),
+            },
             body: JSON.stringify({ profile }),
           });
         } catch {
@@ -110,6 +190,15 @@ export const useStyleStore = create<StyleStore>()(
     }),
     {
       name: 'girlbot-style-profile',
+      partialize: (state) => ({
+        profile: {
+          ...state.profile,
+          // Filter out any stale base64 items (safety net during migration)
+          wardrobeItems: state.profile.wardrobeItems.filter(
+            (item) => !item.imageUrl.startsWith('data:')
+          ),
+        },
+      }),
     }
   )
 );
