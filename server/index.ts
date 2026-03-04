@@ -4,6 +4,7 @@ import cors from 'cors';
 import { runMigrations } from './db/migrate.js';
 import chatRouter from './routes/chat.js';
 import styleRouter from './routes/style.js';
+import travelRouter from './routes/travel.js';
 
 // Initialize SQLite + run migrations before anything else
 runMigrations();
@@ -28,6 +29,7 @@ app.get('/api/health', (_req, res) => {
 // Routes
 app.use('/api/chat', chatRouter);
 app.use('/api/style', styleRouter);
+app.use('/api/travel', travelRouter);
 
 // Global error handler — prevents raw stack traces from leaking to the client
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

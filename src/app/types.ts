@@ -64,7 +64,8 @@ export type RichCardType =
   | 'colorSeason'
   | 'fitnessClass'
   | 'reminder'
-  | 'wardrobeItem';
+  | 'wardrobeItem'
+  | 'cheapestDates';
 
 export interface RichCard {
   type: RichCardType;

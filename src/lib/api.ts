@@ -1,6 +1,7 @@
 import type { AgentId, Message, RichCard } from '../app/types';
 import { useChatStore } from '../stores/chat';
 import { useStyleStore, type StyleProfile } from '../stores/style';
+import { useTravelStore } from '../stores/travel';
 import { getUserId } from './session';
 
 /**
@@ -48,6 +49,13 @@ function buildChatProfile(profile: StyleProfile) {
         ({ id, category, color, colorHex, style, seasons, occasions, pairsWith })),
     },
   };
+}
+
+/** Fetch with a timeout to prevent indefinite hangs */
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 20000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeout));
 }
 
 /** Read an SSE stream and push tokens into the store */
@@ -139,6 +147,8 @@ export async function sendMessage(
   try {
     const styleProfile =
       effectiveAgent === 'style' ? buildChatProfile(useStyleStore.getState().profile) : undefined;
+    const travelProfile =
+      effectiveAgent === 'travel' ? buildTravelProfile(useTravelStore.getState().profile) : undefined;
 
     const allMessages = store.getMessages(agentId);
     // Exclude the empty bot placeholder, limit to last 20 messages to prevent token overflow
@@ -153,6 +163,18 @@ export async function sendMessage(
       analysisPromise = runStyleAnalysis(imageBase64, text, agentId, analysisType);
     }
 
+    // If this is the travel agent, run search extraction in parallel
+    let travelPromise: Promise<RichCard[] | null> | null = null;
+    if (effectiveAgent === 'travel') {
+      store.setAnalyzing(agentId, true);
+      // Pass recent conversation context so follow-ups ("find nonstop") work
+      const recentContext = apiMessages.slice(-6).map((m) => ({
+        role: m.role as string,
+        content: typeof m.content === 'string' ? m.content : '',
+      }));
+      travelPromise = runTravelSearch(text, agentId, recentContext);
+    }
+
     // Stream the conversational response
     const res = await fetch('/api/chat', {
       method: 'POST',
@@ -164,6 +186,7 @@ export async function sendMessage(
         agentId: effectiveAgent,
         messages: apiMessages,
         styleProfile,
+        travelProfile,
       }),
     });
 
@@ -173,12 +196,42 @@ export async function sendMessage(
 
     await readStream(res, agentId);
 
+    // Re-enable user input immediately after stream finishes.
+    // Travel/analysis results will attach cards in the background.
+    store.setStreaming(agentId, false);
+
     // If analysis was running, wait for it and attach the card
     if (analysisPromise) {
       try {
         const richCard = await analysisPromise;
         if (richCard) {
           store.setRichCardOnLastBot(agentId, richCard);
+        }
+      } finally {
+        store.setAnalyzing(agentId, false);
+      }
+    }
+
+    // If travel search was running, wait for it and attach cards
+    if (travelPromise) {
+      try {
+        const cards = await travelPromise;
+        if (cards && cards.length > 0) {
+          // Attach first card to the existing bot message
+          store.setRichCardOnLastBot(agentId, cards[0]);
+
+          // Add remaining cards as separate bot messages (up to 3 total)
+          for (let i = 1; i < Math.min(cards.length, 3); i++) {
+            const cardMsg: Message = {
+              id: crypto.randomUUID(),
+              type: 'bot',
+              text: '',
+              timestamp: new Date(),
+              agentId,
+              richCard: cards[i],
+            };
+            store.addMessage(agentId, cardMsg);
+          }
         }
       } finally {
         store.setAnalyzing(agentId, false);
@@ -192,6 +245,7 @@ export async function sendMessage(
         : `Something went wrong: ${err.message}`
     );
   } finally {
+    // Ensure streaming is always reset even if an error occurred before the first reset
     store.setStreaming(agentId, false);
   }
 }
@@ -291,6 +345,185 @@ async function runStyleAnalysis(
           thumbnailUrl: item?.thumbnailUrl,
         },
       };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a lean travel profile for the chat system prompt.
+ */
+function buildTravelProfile(profile: import('../stores/travel').TravelProfile) {
+  return {
+    homeAirport: profile.homeAirport,
+    preferredCabin: profile.preferredCabin,
+    preferredCurrency: profile.preferredCurrency,
+    maxPricePreference: profile.maxPricePreference,
+    preferredAirlines: profile.preferredAirlines || [],
+    excludedAirlines: profile.excludedAirlines || [],
+    recentSearches: (profile.recentSearches || []).slice(0, 3).map(({ type, label }) => ({ type, label })),
+    bookmarks: (profile.bookmarks || []).slice(0, 5).map(({ type, label }) => ({ type, label })),
+    tripSelections: (profile.tripSelections || []).map(({ type, label, data }) => ({
+      type,
+      label,
+      price: data.price || data.totalPrice || data.pricePerNight || null,
+      route: type === 'flight' ? `${data.departure?.city} → ${data.arrival?.city}` : null,
+      dates: type === 'flight'
+        ? { departure: data.departureDate, arrival: data.arrivalDate }
+        : { checkIn: data.checkIn, checkOut: data.checkOut },
+    })),
+  };
+}
+
+/**
+ * Run travel search in parallel with the SSE stream.
+ * Calls /api/travel/extract to get structured params, then the appropriate search endpoint.
+ * Returns an array of RichCards if successful, null otherwise.
+ */
+async function runTravelSearch(
+  userText: string,
+  agentId: AgentId,
+  context?: Array<{ role: string; content: string }>
+): Promise<RichCard[] | null> {
+  try {
+    // Step 1: Extract structured intent from user text (with conversation context for follow-ups)
+    const extractRes = await fetchWithTimeout('/api/travel/extract', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-User-Id': getUserId(),
+      },
+      body: JSON.stringify({ message: userText, context }),
+    });
+
+    if (!extractRes.ok) return null;
+    const { intent } = await extractRes.json();
+
+    if (!intent || intent.type === 'none') return null;
+
+    // Step 2: Call the appropriate search endpoint
+    if (intent.type === 'cheapest_dates') {
+      const res = await fetchWithTimeout('/api/travel/cheapest-dates', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': getUserId(),
+        },
+        body: JSON.stringify(intent.params),
+      });
+
+      if (!res.ok) return null;
+      const { results, origin, destination } = await res.json();
+
+      if (!results?.length) return null;
+
+      useTravelStore.getState().addRecentSearch({
+        type: 'cheapest_dates',
+        params: intent.params,
+        label: `Cheapest dates: ${intent.params.origin} → ${intent.params.destination}`,
+      });
+
+      return [{
+        type: 'cheapestDates',
+        data: { origin, destination, results },
+      }];
+    }
+
+    if (intent.type === 'flight_search') {
+      // Learn maxPrice preference if user specified one
+      if (intent.params.maxPrice) {
+        useTravelStore.getState().setMaxPricePreference(intent.params.maxPrice);
+      }
+      // Learn excluded airlines
+      if (intent.params.excludedAirlineCodes?.length) {
+        const store = useTravelStore.getState();
+        for (const code of intent.params.excludedAirlineCodes) {
+          store.addExcludedAirline(code);
+        }
+      }
+
+      const res = await fetchWithTimeout('/api/travel/flights', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': getUserId(),
+        },
+        body: JSON.stringify(intent.params),
+      });
+
+      if (!res.ok) return null;
+      const { results } = await res.json();
+
+      if (!results?.length) return null;
+
+      // Log to recent searches
+      useTravelStore.getState().addRecentSearch({
+        type: 'flight_search',
+        params: intent.params,
+        label: `${intent.params.origin} → ${intent.params.destination}`,
+      });
+
+      return results.map((flight: any): RichCard => ({
+        type: 'flight',
+        data: flight,
+      }));
+    }
+
+    if (intent.type === 'hotel_search') {
+      const res = await fetchWithTimeout('/api/travel/hotels', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': getUserId(),
+        },
+        body: JSON.stringify(intent.params),
+      });
+
+      if (!res.ok) return null;
+      const { results } = await res.json();
+
+      if (!results?.length) return null;
+
+      useTravelStore.getState().addRecentSearch({
+        type: 'hotel_search',
+        params: intent.params,
+        label: `Hotels in ${intent.params.cityCode}`,
+      });
+
+      return results.map((hotel: any): RichCard => ({
+        type: 'hotel',
+        data: hotel,
+      }));
+    }
+
+    if (intent.type === 'poi_search') {
+      const res = await fetchWithTimeout('/api/travel/pois', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': getUserId(),
+        },
+        body: JSON.stringify(intent.params),
+      });
+
+      if (!res.ok) return null;
+      const { results } = await res.json();
+
+      if (!results?.length) return null;
+
+      useTravelStore.getState().addRecentSearch({
+        type: 'poi_search',
+        params: intent.params,
+        label: `Things to do in ${intent.params.cityName || 'area'}`,
+      });
+
+      return results.map((poi: any): RichCard => ({
+        type: 'place',
+        data: poi,
+      }));
     }
 
     return null;

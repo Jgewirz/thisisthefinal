@@ -45,10 +45,11 @@ function sanitizeError(message: string): string {
 
 // POST /api/chat — streaming SSE endpoint
 router.post('/', async (req: Request, res: Response) => {
-  const { agentId, messages, styleProfile } = req.body as {
+  const { agentId, messages, styleProfile, travelProfile } = req.body as {
     agentId: string;
     messages: ChatMessage[];
     styleProfile?: object;
+    travelProfile?: object;
   };
 
   if (!agentId || !messages?.length) {
@@ -68,7 +69,7 @@ router.post('/', async (req: Request, res: Response) => {
   });
 
   try {
-    for await (const token of streamChat(agentId, cleanMessages, styleProfile)) {
+    for await (const token of streamChat(agentId, cleanMessages, styleProfile, travelProfile)) {
       res.write(`data: ${JSON.stringify({ token })}\n\n`);
     }
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
