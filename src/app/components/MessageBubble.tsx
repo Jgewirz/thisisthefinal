@@ -4,6 +4,7 @@ import { PlaceCard } from './cards/PlaceCard';
 import { ColorSeasonCard } from './cards/ColorSeasonCard';
 import { FitnessClassCard } from './cards/FitnessClassCard';
 import { FlightCard } from './cards/FlightCard';
+import ReactMarkdown from 'react-markdown';
 
 interface MessageBubbleProps {
   message: Message;
@@ -166,7 +167,56 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             </div>
           )}
 
-          {message.text && <p className="whitespace-pre-wrap">{message.text}</p>}
+          {message.text && (
+            isUser ? (
+              <p className="whitespace-pre-wrap">{message.text}</p>
+            ) : (
+              <div className="prose-bot">
+                <ReactMarkdown
+                  components={{
+                    h1: ({ children }) => (
+                      <h1 className="text-lg font-bold mt-3 mb-1.5" style={{ color: 'var(--text-primary)' }}>{children}</h1>
+                    ),
+                    h2: ({ children }) => (
+                      <h2 className="text-base font-bold mt-3 mb-1.5" style={{ color: 'var(--text-primary)' }}>{children}</h2>
+                    ),
+                    h3: ({ children }) => (
+                      <h3 className="text-sm font-bold mt-2 mb-1" style={{ color: 'var(--text-primary)' }}>{children}</h3>
+                    ),
+                    p: ({ children }) => (
+                      <p className="mb-2 last:mb-0 leading-relaxed" style={{ color: 'var(--text-primary)' }}>{children}</p>
+                    ),
+                    strong: ({ children }) => (
+                      <strong className="font-semibold" style={{ color: 'var(--text-primary)' }}>{children}</strong>
+                    ),
+                    em: ({ children }) => (
+                      <em className="italic">{children}</em>
+                    ),
+                    ul: ({ children }) => (
+                      <ul className="list-disc list-inside mb-2 space-y-0.5">{children}</ul>
+                    ),
+                    ol: ({ children }) => (
+                      <ol className="list-decimal list-inside mb-2 space-y-0.5">{children}</ol>
+                    ),
+                    li: ({ children }) => (
+                      <li className="leading-relaxed" style={{ color: 'var(--text-primary)' }}>{children}</li>
+                    ),
+                    hr: () => (
+                      <hr className="my-2 border-0 h-px" style={{ backgroundColor: 'var(--bg-surface-elevated)' }} />
+                    ),
+                    code: ({ children }) => (
+                      <code className="px-1.5 py-0.5 rounded text-sm" style={{ backgroundColor: 'var(--bg-surface-elevated)', color: agent.color }}>{children}</code>
+                    ),
+                    a: ({ href, children }) => (
+                      <a href={href} target="_blank" rel="noopener noreferrer" className="underline transition-opacity duration-150 hover:opacity-75" style={{ color: agent.color }}>{children}</a>
+                    ),
+                  }}
+                >
+                  {message.text}
+                </ReactMarkdown>
+              </div>
+            )
+          )}
 
           {/* Rich card */}
           {message.richCard && (

@@ -91,12 +91,14 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
               key={action}
               onClick={() => handleQuickAction(action)}
               disabled={disabled}
-              className="px-3 py-1.5 rounded-full text-sm whitespace-nowrap border transition-colors flex-shrink-0 hover:bg-opacity-10 disabled:opacity-50"
+              className="px-3 py-1.5 rounded-full text-sm whitespace-nowrap border transition-all duration-150 flex-shrink-0 disabled:opacity-50 active:scale-95"
               style={{
                 borderColor: agent.color,
                 color: agent.color,
                 backgroundColor: 'transparent',
               }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = agent.color + '18'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
             >
               {action}
             </button>
@@ -116,7 +118,7 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
             />
             <button
               onClick={clearPendingImage}
-              className="absolute -top-2 -right-2 w-6 h-6 rounded-full flex items-center justify-center"
+              className="absolute -top-2 -right-2 w-6 h-6 rounded-full flex items-center justify-center transition-all duration-150 hover:brightness-125 active:scale-90"
               style={{ backgroundColor: 'var(--error)' }}
             >
               <X size={14} style={{ color: 'var(--bg-primary)' }} />
@@ -145,8 +147,7 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
         <div className="flex items-center gap-2">
           <button
             onClick={handleAttachment}
-            className="p-2 rounded-lg hover:bg-opacity-50 transition-colors"
-            style={{ backgroundColor: 'transparent' }}
+            className="p-2 rounded-lg transition-all duration-150 hover:bg-[var(--bg-surface-elevated)] active:scale-90"
           >
             <Paperclip
               size={20}
@@ -154,8 +155,7 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
             />
           </button>
           <button
-            className="p-2 rounded-lg hover:bg-opacity-50 transition-colors"
-            style={{ backgroundColor: 'transparent' }}
+            className="p-2 rounded-lg transition-all duration-150 hover:bg-[var(--bg-surface-elevated)] active:scale-90"
           >
             <MapPin size={20} style={{ color: 'var(--text-secondary)' }} />
           </button>
@@ -184,7 +184,7 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
         <button
           onClick={handleSubmit}
           disabled={disabled || (!message.trim() && !pendingImage)}
-          className="w-10 h-10 rounded-full flex items-center justify-center transition-transform active:scale-95 disabled:opacity-50"
+          className="w-10 h-10 rounded-full flex items-center justify-center transition-all duration-150 active:scale-90 disabled:opacity-50 hover:brightness-110"
           style={{ backgroundColor: 'var(--accent-global)' }}
         >
           <Send size={18} style={{ color: 'var(--bg-primary)' }} />

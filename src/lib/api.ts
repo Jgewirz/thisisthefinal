@@ -1,6 +1,29 @@
 import type { AgentId, Message, RichCard } from '../app/types';
 import { useChatStore } from '../stores/chat';
 import { useStyleStore } from '../stores/style';
+import { useAuthStore } from '../stores/auth';
+
+// ── Authenticated fetch wrapper ─────────────────────────────
+
+/** Fetch with JWT auth header. Auto-logout on 401. */
+async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const { token } = useAuthStore.getState();
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (res.status === 401) {
+    useAuthStore.getState().logout();
+    window.location.href = '/login';
+    throw new Error('Session expired');
+  }
+
+  return res;
+}
 
 /**
  * Convert store messages to the shape the API expects.
@@ -47,6 +70,10 @@ async function readStream(res: Response, agentId: AgentId) {
       if (!line.startsWith('data: ')) continue;
       try {
         const data = JSON.parse(line.slice(6));
+        if (data.classifiedAgent) {
+          // Update the bot message badge to show the classified specialist
+          store.updateLastBotAgentId(agentId, data.classifiedAgent as AgentId);
+        }
         if (data.token) {
           store.appendToLastBot(agentId, data.token);
         }
@@ -61,10 +88,87 @@ async function readStream(res: Response, agentId: AgentId) {
 }
 
 /**
+ * Resize a base64 image to a small thumbnail for DB storage.
+ * Full images are 2-5 MB; thumbnails are ~10-20 KB.
+ */
+function createThumbnail(dataUrl: string, maxWidth = 200): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxWidth / img.width);
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.5));
+    };
+    img.onerror = () => resolve(dataUrl); // fallback to original
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * Persist a message to the database (fire-and-forget).
+ * If the message has a base64 image, shrink it to a thumbnail first.
+ */
+async function persistMessage(msg: Message) {
+  let imageUrl = msg.imageUrl;
+  if (imageUrl?.startsWith('data:')) {
+    imageUrl = await createThumbnail(imageUrl);
+  }
+  authFetch('/api/chat/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: msg.id,
+      agentId: msg.agentId,
+      type: msg.type,
+      text: msg.text,
+      imageUrl,
+      richCard: msg.richCard,
+    }),
+  }).catch(() => {}); // silent fail — local store is primary
+}
+
+/**
+ * Load chat history from the database for a given agent.
+ */
+export async function loadChatHistory(agentId: AgentId): Promise<void> {
+  const store = useChatStore.getState();
+  if (store.agents[agentId].historyLoaded) return; // already loaded
+
+  try {
+    const res = await authFetch(`/api/chat/history?agentId=${agentId}`);
+    if (!res.ok) return;
+    const { messages } = await res.json();
+
+    if (messages && messages.length > 0) {
+      const parsed: Message[] = messages.map((m: any) => ({
+        id: m.id,
+        type: m.type as 'user' | 'bot',
+        text: m.text || '',
+        timestamp: new Date(m.created_at),
+        agentId: m.agent_id as AgentId,
+        imageUrl: m.image_url || undefined,
+        richCard: m.rich_card || undefined,
+      }));
+      store.setMessages(agentId, parsed);
+    }
+  } catch {
+    // silent fail
+  } finally {
+    store.setHistoryLoaded(agentId);
+  }
+}
+
+/**
  * Send a text message and stream the response.
  * Optionally attach an image (base64 data URL) which will be:
  *   1. Shown as a thumbnail in the user's message bubble
- *   2. Sent to GPT-4o as vision content so the Stylist can see it
+ *   2. Sent to Claude as vision content so the Stylist can see it
  *   3. For the Style agent: also run through /api/style/analyze for a structured card
  */
 export async function sendMessage(
@@ -73,7 +177,6 @@ export async function sendMessage(
   imageBase64?: string
 ) {
   const store = useChatStore.getState();
-  const effectiveAgent = agentId === 'all' ? 'lifestyle' : agentId;
 
   // Add user message (with optional image for thumbnail display)
   const userMsg: Message = {
@@ -85,6 +188,9 @@ export async function sendMessage(
     imageUrl: imageBase64,
   };
   store.addMessage(agentId, userMsg);
+
+  // Persist user message to DB (fire-and-forget)
+  persistMessage(userMsg);
 
   // Create placeholder bot message
   const botMsg: Message = {
@@ -98,8 +204,9 @@ export async function sendMessage(
   store.setStreaming(agentId, true);
 
   try {
+    // Send styleProfile for style agent, or for 'all' (in case it routes to style)
     const styleProfile =
-      effectiveAgent === 'style' ? useStyleStore.getState().profile : undefined;
+      (agentId === 'style' || agentId === 'all') ? useStyleStore.getState().profile : undefined;
 
     const allMessages = store.getMessages(agentId);
     // Exclude the empty bot placeholder
@@ -110,16 +217,16 @@ export async function sendMessage(
     // If this is the style agent and an image was sent, run structured analysis
     // in parallel with the streaming chat response
     const analysisPromise =
-      effectiveAgent === 'style' && imageBase64
+      agentId === 'style' && imageBase64
         ? runStyleAnalysis(imageBase64, text, agentId)
         : null;
 
-    // Stream the conversational response
-    const res = await fetch('/api/chat', {
+    // Stream the conversational response (backend handles 'all' classification)
+    const res = await authFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        agentId: effectiveAgent,
+        agentId,
         messages: apiMessages,
         styleProfile,
       }),
@@ -131,11 +238,32 @@ export async function sendMessage(
 
     await readStream(res, agentId);
 
+    // Try to extract a rich card from the bot's text response
+    const finalMessages = store.getMessages(agentId);
+    const lastBot = finalMessages[finalMessages.length - 1];
+    if (lastBot && lastBot.type === 'bot' && lastBot.text && !analysisPromise) {
+      const extracted = extractRichCard(lastBot.text);
+      if (extracted) {
+        store.setRichCardOnLastBot(agentId, extracted);
+      }
+    }
+
+    // Persist the final bot message to DB
+    if (lastBot && lastBot.type === 'bot' && lastBot.text) {
+      persistMessage(lastBot);
+    }
+
     // If analysis was running, wait for it and attach the card
     if (analysisPromise) {
       const richCard = await analysisPromise;
       if (richCard) {
         store.setRichCardOnLastBot(agentId, richCard);
+        // Re-persist the bot message now that it has a rich card
+        const updatedMessages = store.getMessages(agentId);
+        const updatedBot = updatedMessages[updatedMessages.length - 1];
+        if (updatedBot && updatedBot.type === 'bot') {
+          persistMessage(updatedBot);
+        }
       }
     }
   } catch (err: any) {
@@ -174,7 +302,7 @@ async function runStyleAnalysis(
   }
 
   try {
-    const res = await fetch('/api/style/analyze', {
+    const res = await authFetch('/api/style/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: imageBase64, type }),
@@ -230,4 +358,66 @@ async function runStyleAnalysis(
   } catch {
     return null;
   }
+}
+
+// ── Rich Card Extraction ────────────────────────────────────
+
+/**
+ * Scan a bot response for JSON blocks that match known rich card schemas.
+ * Agents are instructed to include structured JSON for cards — this extracts it.
+ */
+function extractRichCard(text: string): RichCard | null {
+  // Look for JSON blocks in code fences
+  const jsonMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+  if (!jsonMatch) return null;
+
+  try {
+    const data = JSON.parse(jsonMatch[1]);
+
+    // Detect card type by data shape
+    if (data.season && data.colors) {
+      return { type: 'colorSeason', data };
+    }
+    if (data.score != null && data.strengths) {
+      return { type: 'outfit', data };
+    }
+    if (data.airline || (data.departure && data.arrival)) {
+      return { type: 'flight', data };
+    }
+    if (data.name && (data.address || data.rating || data.location)) {
+      return { type: 'place', data };
+    }
+    if (data.className || data.instructor) {
+      return { type: 'fitnessClass', data };
+    }
+    if (data.time && data.action) {
+      return { type: 'reminder', data };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Conversation Management ─────────────────────────────────
+
+/** Clear chat history for a specific agent. */
+export async function clearChatHistory(agentId: AgentId): Promise<void> {
+  try {
+    await authFetch(`/api/chat/messages?agentId=${agentId}`, { method: 'DELETE' });
+  } catch {
+    // silent fail
+  }
+  useChatStore.getState().clearMessages(agentId);
+}
+
+/** Clear ALL chat history across all agents. */
+export async function clearAllHistory(): Promise<void> {
+  try {
+    await authFetch('/api/chat/messages', { method: 'DELETE' });
+  } catch {
+    // silent fail
+  }
+  useChatStore.getState().clearAllMessages();
 }

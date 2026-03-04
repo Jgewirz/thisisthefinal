@@ -52,20 +52,24 @@ export function ColorSeasonCard({ data, agentColor }: ColorSeasonCardProps) {
       {/* Action buttons */}
       <div className="flex gap-2 pt-2">
         <button
-          className="flex-1 px-4 py-2 rounded-full border transition-colors"
+          className="flex-1 px-4 py-2 rounded-full border transition-all duration-150 hover:brightness-125 active:scale-95"
           style={{ 
             borderColor: agentColor,
             color: agentColor 
           }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = agentColor + '18'}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
         >
           See makeup tips
         </button>
         <button
-          className="flex-1 px-4 py-2 rounded-full border transition-colors"
+          className="flex-1 px-4 py-2 rounded-full border transition-all duration-150 hover:brightness-125 active:scale-95"
           style={{ 
             borderColor: agentColor,
             color: agentColor 
           }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = agentColor + '18'}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
         >
           Best outfit colors
         </button>

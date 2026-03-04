@@ -98,7 +98,7 @@ export function FlightCard({ data, agentColor }: FlightCardProps) {
           {data.price}
         </div>
         <button
-          className="px-6 py-2 rounded-full transition-colors"
+          className="px-6 py-2 rounded-full transition-all duration-150 hover:brightness-110 hover:shadow-md active:scale-95"
           style={{ 
             backgroundColor: agentColor,
             color: 'var(--bg-primary)'

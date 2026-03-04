@@ -38,7 +38,7 @@ export function BottomTabBar() {
           <Link
             key={agent.id}
             to={path}
-            className="flex flex-col items-center justify-center w-16 h-full"
+            className="flex flex-col items-center justify-center w-16 h-full transition-all duration-150 active:scale-90 active:opacity-70"
           >
             <Icon 
               size={22}

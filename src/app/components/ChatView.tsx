@@ -1,10 +1,10 @@
-import { Search, MoreVertical, Loader2 } from 'lucide-react';
+import { Search, MoreVertical, Loader2, Trash2 } from 'lucide-react';
 import { AgentId, agents, Message } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
 import { useChatStore } from '../../stores/chat';
 import { useMemo, useRef, useEffect } from 'react';
-import { sendMessage } from '../../lib/api';
+import { sendMessage, loadChatHistory, clearChatHistory } from '../../lib/api';
 
 interface ChatViewProps {
   agentId: AgentId;
@@ -12,8 +12,15 @@ interface ChatViewProps {
 
 export function ChatView({ agentId }: ChatViewProps) {
   const agent = agents[agentId];
-  const { messages, isStreaming } = useChatStore((s) => s.agents[agentId]);
+  const { messages, isStreaming, historyLoaded } = useChatStore((s) => s.agents[agentId]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Load history from DB on first mount for this agent
+  useEffect(() => {
+    if (!historyLoaded) {
+      loadChatHistory(agentId);
+    }
+  }, [agentId, historyLoaded]);
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -58,6 +65,12 @@ export function ChatView({ agentId }: ChatViewProps) {
     sendMessage(agentId, text, imageBase64);
   };
 
+  const handleClear = async () => {
+    if (messages.length === 0) return;
+    if (!window.confirm('Clear this conversation? This cannot be undone.')) return;
+    await clearChatHistory(agentId);
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Chat Header */}
@@ -87,14 +100,19 @@ export function ChatView({ agentId }: ChatViewProps) {
 
         <div className="flex items-center gap-2">
           <button
-            className="p-2 rounded-lg hover:bg-opacity-50 transition-colors"
-            style={{ backgroundColor: 'transparent' }}
+            onClick={handleClear}
+            className="p-2 rounded-lg transition-all duration-150 hover:bg-[var(--bg-surface-elevated)] active:scale-90"
+            title="Clear conversation"
+          >
+            <Trash2 size={20} style={{ color: 'var(--text-secondary)' }} />
+          </button>
+          <button
+            className="p-2 rounded-lg transition-all duration-150 hover:bg-[var(--bg-surface-elevated)] active:scale-90"
           >
             <Search size={20} style={{ color: 'var(--text-secondary)' }} />
           </button>
           <button
-            className="p-2 rounded-lg hover:bg-opacity-50 transition-colors"
-            style={{ backgroundColor: 'transparent' }}
+            className="p-2 rounded-lg transition-all duration-150 hover:bg-[var(--bg-surface-elevated)] active:scale-90"
           >
             <MoreVertical size={20} style={{ color: 'var(--text-secondary)' }} />
           </button>
@@ -126,7 +144,7 @@ export function ChatView({ agentId }: ChatViewProps) {
             </p>
             <div className="flex flex-wrap gap-2 justify-center">
               <button
-                className="px-4 py-2 rounded-full border transition-colors"
+                className="px-4 py-2 rounded-full border transition-all duration-150 hover:brightness-110 active:scale-95"
                 style={{
                   borderColor: agent.color,
                   color: agent.color,

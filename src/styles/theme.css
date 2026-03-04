@@ -190,6 +190,16 @@
     font-size: var(--text-base);
     font-weight: var(--font-weight-medium);
     line-height: 1.5;
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  input:focus {
+    border-color: var(--accent-global) !important;
+    box-shadow: 0 0 0 2px rgba(232, 160, 191, 0.2);
   }
 
   input {

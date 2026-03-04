@@ -30,7 +30,7 @@ export function PlaceCard({ data, agentColor }: PlaceCardProps) {
           <Phone size={16} style={{ color: 'var(--text-secondary)' }} />
           <a 
             href={`tel:${data.phone}`}
-            className="hover:underline"
+            className="hover:underline transition-opacity duration-150 hover:opacity-80"
             style={{ color: agentColor }}
           >
             {data.phone}
@@ -43,7 +43,7 @@ export function PlaceCard({ data, agentColor }: PlaceCardProps) {
             href={`https://${data.website}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="hover:underline"
+            className="hover:underline transition-opacity duration-150 hover:opacity-80"
             style={{ color: agentColor }}
           >
             {data.website}
@@ -89,7 +89,7 @@ export function PlaceCard({ data, agentColor }: PlaceCardProps) {
             borderColor: 'var(--bg-surface-elevated)' 
           }}
         >
-          <button className="flex items-center gap-1 group">
+          <button className="flex items-center gap-1 group transition-all duration-150 hover:brightness-125 active:scale-90">
             <div 
               className="w-6 h-6 rounded-full flex items-center justify-center"
               style={{ backgroundColor: '#FF6B6B' }}
@@ -101,7 +101,7 @@ export function PlaceCard({ data, agentColor }: PlaceCardProps) {
             </span>
           </button>
           
-          <button className="flex items-center gap-1 group">
+          <button className="flex items-center gap-1 group transition-all duration-150 hover:brightness-125 active:scale-90">
             <div 
               className="w-6 h-6 rounded-full flex items-center justify-center"
               style={{ backgroundColor: '#4A9EFF' }}

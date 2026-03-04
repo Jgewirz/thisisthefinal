@@ -53,7 +53,7 @@ export function FitnessClassCard({ data, agentColor }: FitnessClassCardProps) {
         {/* Action buttons */}
         <div className="flex gap-2 pt-2">
           <button
-            className="flex-1 px-4 py-2 rounded-full transition-colors"
+            className="flex-1 px-4 py-2 rounded-full transition-all duration-150 hover:brightness-110 hover:shadow-md active:scale-95"
             style={{ 
               backgroundColor: agentColor,
               color: 'var(--bg-primary)'
@@ -62,11 +62,13 @@ export function FitnessClassCard({ data, agentColor }: FitnessClassCardProps) {
             Book
           </button>
           <button
-            className="px-4 py-2 rounded-full border transition-colors flex items-center gap-2"
+            className="px-4 py-2 rounded-full border transition-all duration-150 hover:brightness-125 active:scale-95 flex items-center gap-2"
             style={{ 
               borderColor: agentColor,
               color: agentColor 
             }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = agentColor + '18'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
           >
             <Navigation size={16} />
             Directions
