@@ -2,6 +2,8 @@ import type { AgentId, Message, RichCard } from '../app/types';
 import { useChatStore } from '../stores/chat';
 import { useStyleStore, type StyleProfile } from '../stores/style';
 import { useTravelStore } from '../stores/travel';
+import { useFitnessStore } from '../stores/fitness';
+import { useLocationStore } from '../stores/location';
 import { getUserId } from './session';
 
 /**
@@ -48,6 +50,39 @@ function buildChatProfile(profile: StyleProfile) {
       items: profile.wardrobeItems.map(({ id, category, color, colorHex, style, seasons, occasions, pairsWith }) =>
         ({ id, category, color, colorHex, style, seasons, occasions, pairsWith })),
     },
+  };
+}
+
+/**
+ * Build a lean location object for the chat system prompt (no raw lat/lng for privacy).
+ */
+function buildChatLocation() {
+  const loc = useLocationStore.getState().location;
+  if (!loc) return undefined;
+  return {
+    city: loc.city,
+    region: loc.region,
+    country: loc.country,
+    timezone: loc.timezone,
+    nearestAirport: loc.nearestAirport,
+    hemisphere: loc.lat != null ? (loc.lat >= 0 ? 'Northern' : 'Southern') : undefined,
+  };
+}
+
+/**
+ * Build a full location object for search extraction (includes lat/lng for POI).
+ */
+function buildFullLocation() {
+  const loc = useLocationStore.getState().location;
+  if (!loc) return undefined;
+  return {
+    lat: loc.lat,
+    lng: loc.lng,
+    city: loc.city,
+    region: loc.region,
+    country: loc.country,
+    timezone: loc.timezone,
+    nearestAirport: loc.nearestAirport,
   };
 }
 
@@ -149,6 +184,8 @@ export async function sendMessage(
       effectiveAgent === 'style' ? buildChatProfile(useStyleStore.getState().profile) : undefined;
     const travelProfile =
       effectiveAgent === 'travel' ? buildTravelProfile(useTravelStore.getState().profile) : undefined;
+    const fitnessProfile =
+      effectiveAgent === 'fitness' ? buildFitnessProfile(useFitnessStore.getState().profile) : undefined;
 
     const allMessages = store.getMessages(agentId);
     // Exclude the empty bot placeholder, limit to last 20 messages to prevent token overflow
@@ -175,6 +212,17 @@ export async function sendMessage(
       travelPromise = runTravelSearch(text, agentId, recentContext);
     }
 
+    // If this is the fitness agent, run class search extraction in parallel
+    let fitnessPromise: Promise<RichCard[] | null> | null = null;
+    if (effectiveAgent === 'fitness') {
+      store.setAnalyzing(agentId, true);
+      const recentContext = apiMessages.slice(-6).map((m) => ({
+        role: m.role as string,
+        content: typeof m.content === 'string' ? m.content : '',
+      }));
+      fitnessPromise = runFitnessSearch(text, agentId, recentContext);
+    }
+
     // Stream the conversational response
     const res = await fetch('/api/chat', {
       method: 'POST',
@@ -187,6 +235,8 @@ export async function sendMessage(
         messages: apiMessages,
         styleProfile,
         travelProfile,
+        fitnessProfile,
+        userLocation: buildChatLocation(),
       }),
     });
 
@@ -221,6 +271,30 @@ export async function sendMessage(
           store.setRichCardOnLastBot(agentId, cards[0]);
 
           // Add remaining cards as separate bot messages (up to 3 total)
+          for (let i = 1; i < Math.min(cards.length, 3); i++) {
+            const cardMsg: Message = {
+              id: crypto.randomUUID(),
+              type: 'bot',
+              text: '',
+              timestamp: new Date(),
+              agentId,
+              richCard: cards[i],
+            };
+            store.addMessage(agentId, cardMsg);
+          }
+        }
+      } finally {
+        store.setAnalyzing(agentId, false);
+      }
+    }
+
+    // If fitness search was running, wait for it and attach cards
+    if (fitnessPromise) {
+      try {
+        const cards = await fitnessPromise;
+        if (cards && cards.length > 0) {
+          store.setRichCardOnLastBot(agentId, cards[0]);
+
           for (let i = 1; i < Math.min(cards.length, 3); i++) {
             const cardMsg: Message = {
               id: crypto.randomUUID(),
@@ -396,7 +470,7 @@ async function runTravelSearch(
         'Content-Type': 'application/json',
         'X-User-Id': getUserId(),
       },
-      body: JSON.stringify({ message: userText, context }),
+      body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
     });
 
     if (!extractRes.ok) return null;
@@ -500,13 +574,15 @@ async function runTravelSearch(
     }
 
     if (intent.type === 'poi_search') {
+      const { textQuery, latitude, longitude, radius, types, cityName } = intent.params;
+
       const res = await fetchWithTimeout('/api/travel/pois', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-User-Id': getUserId(),
         },
-        body: JSON.stringify(intent.params),
+        body: JSON.stringify({ textQuery, latitude, longitude, radius, types, cityName }),
       });
 
       if (!res.ok) return null;
@@ -517,7 +593,7 @@ async function runTravelSearch(
       useTravelStore.getState().addRecentSearch({
         type: 'poi_search',
         params: intent.params,
-        label: `Things to do in ${intent.params.cityName || 'area'}`,
+        label: textQuery || `Things to do in ${cityName || 'area'}`,
       });
 
       return results.map((poi: any): RichCard => ({
@@ -529,5 +605,142 @@ async function runTravelSearch(
     return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Build a lean fitness profile for the chat system prompt.
+ */
+function buildFitnessProfile(profile: import('../stores/fitness').FitnessProfile) {
+  return {
+    homeLocation: profile.homeLocation,
+    preferredClassTypes: profile.preferredClassTypes || [],
+    preferredTimes: profile.preferredTimes || [],
+    fitnessLevel: profile.fitnessLevel,
+    recentSearches: (profile.recentSearches || []).slice(0, 3).map(({ type, label }) => ({ type, label })),
+    bookmarks: (profile.bookmarks || []).slice(0, 5).map(({ type, label }) => ({ type, label })),
+    schedule: (profile.schedule || []).map(({ type, label, data }) => ({
+      type,
+      label,
+      className: data.className || null,
+      date: data.date || null,
+      time: data.time || null,
+    })),
+  };
+}
+
+/**
+ * Run fitness class search in parallel with the SSE stream.
+ * Only fires for the fitness agent — never for travel, style, or lifestyle.
+ */
+async function runFitnessSearch(
+  userText: string,
+  agentId: AgentId,
+  context?: Array<{ role: string; content: string }>
+): Promise<RichCard[] | null> {
+  try {
+    // Step 1: Extract structured intent (fitness-only extraction)
+    const extractRes = await fetchWithTimeout('/api/fitness/extract', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-User-Id': getUserId(),
+      },
+      body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
+    });
+
+    if (!extractRes.ok) return null;
+    const { intent } = await extractRes.json();
+
+    if (!intent || intent.type === 'none') return null;
+
+    // Step 2: Call Mindbody class search
+    if (intent.type === 'class_search') {
+      // Learn preferred class type
+      if (intent.params.classType) {
+        useFitnessStore.getState().addPreferredClassType(intent.params.classType);
+      }
+
+      // Attach user location if available so results are sorted by distance
+      const location = useFitnessStore.getState().profile.homeLocation;
+      const searchParams = {
+        ...intent.params,
+        ...(location ? { userLat: location.lat, userLng: location.lng } : {}),
+      };
+
+      const res = await fetchWithTimeout('/api/fitness/classes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': getUserId(),
+        },
+        body: JSON.stringify(searchParams),
+      });
+
+      if (!res.ok) return null;
+      const { results } = await res.json();
+
+      if (!results?.length) return null;
+
+      // Log to recent searches
+      useFitnessStore.getState().addRecentSearch({
+        type: 'class_search',
+        params: intent.params,
+        label: `${intent.params.classType || 'Fitness'} classes${intent.params.timeOfDay ? ` (${intent.params.timeOfDay})` : ''}`,
+      });
+
+      return results.map((cls: any): RichCard => ({
+        type: 'fitnessClass',
+        data: cls,
+      }));
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Calendar API helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function fetchGoogleCalendarStatus(): Promise<{
+  configured: boolean;
+  connected: boolean;
+}> {
+  try {
+    const res = await fetch('/api/calendar/google/status', {
+      headers: { 'X-User-Id': getUserId() },
+    });
+    if (!res.ok) return { configured: false, connected: false };
+    return res.json();
+  } catch {
+    return { configured: false, connected: false };
+  }
+}
+
+export async function getGoogleAuthUrl(): Promise<string | null> {
+  try {
+    const res = await fetch('/api/calendar/google/auth-url', {
+      headers: { 'X-User-Id': getUserId() },
+    });
+    if (!res.ok) return null;
+    const { url } = await res.json();
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+export async function disconnectGoogleCalendar(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/calendar/google/disconnect', {
+      method: 'DELETE',
+      headers: { 'X-User-Id': getUserId() },
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }

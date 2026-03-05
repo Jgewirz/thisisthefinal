@@ -92,8 +92,22 @@ export interface HotelOffer {
   totalPrice: string;
   checkIn: string;
   checkOut: string;
+  nights: number;
   amenities: string[];
   bookingUrl?: string;
+  roomType?: string;
+  bedType?: string;
+  roomDescription?: string;
+  boardType?: string;
+  cancellation?: {
+    type: 'FREE' | 'PARTIAL' | 'NON_REFUNDABLE';
+    deadline?: string;
+    fee?: string;
+  };
+  paymentType?: string;
+  basePricePerNight?: string;
+  taxes?: string;
+  cityCode?: string;
 }
 
 export interface POI {
@@ -399,7 +413,7 @@ function buildItineraryData(itinerary: any, fareDetails: any[], fallbackOrigin: 
   };
 }
 
-// ── Booking URL builder ─────────────────────────────────────────────────
+// ── Booking URL builders ────────────────────────────────────────────────
 
 function buildBookingUrl(origin: string, destination: string, departureDate: string, returnDate?: string): string {
   // Google Flights search URL
@@ -408,6 +422,11 @@ function buildBookingUrl(origin: string, destination: string, departureDate: str
     return `${base}+return+${returnDate}`;
   }
   return base;
+}
+
+function buildHotelBookingUrl(name: string, cityCode: string, checkIn: string, checkOut: string): string {
+  const q = encodeURIComponent(`${name} ${cityCode}`);
+  return `https://www.google.com/travel/hotels?q=${q}&dates=${checkIn},${checkOut}`;
 }
 
 // ── Flight search ──────────────────────────────────────────────────────
@@ -577,7 +596,7 @@ export async function searchHotels(params: HotelSearchParams): Promise<HotelOffe
   });
 
   const hotelIds = (hotelsResponse.data || [])
-    .slice(0, params.maxResults || 5)
+    .slice(0, params.maxResults || 3)
     .map((h: any) => h.hotelId)
     .filter(Boolean);
 
@@ -599,23 +618,81 @@ export async function searchHotels(params: HotelSearchParams): Promise<HotelOffe
     const offer = hotel.offers?.[0];
     const price = offer?.price;
     const totalNum = parseFloat(price?.total || '0');
+    const currency = price?.currency || 'USD';
     const nights = Math.max(1, Math.ceil(
       (new Date(params.checkOut).getTime() - new Date(params.checkIn).getTime()) / (1000 * 60 * 60 * 24)
     ));
 
+    const hotelName = hotel.hotel?.name || 'Hotel';
+
+    // Room type and bed info
+    const roomEst = offer?.room?.typeEstimated;
+    const roomCategory = roomEst?.category
+      ? roomEst.category.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+      : undefined;
+    const bedCount = roomEst?.beds || 1;
+    const bedKind = roomEst?.bedType
+      ? roomEst.bedType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+      : undefined;
+    const bedType = bedKind ? `${bedCount} ${bedKind} Bed${bedCount > 1 ? 's' : ''}` : undefined;
+
+    // Room description
+    const roomDescription = offer?.room?.description?.text || undefined;
+
+    // Board type
+    const rawBoard = offer?.boardType;
+    const boardType = rawBoard
+      ? rawBoard.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+      : undefined;
+
+    // Cancellation policy
+    const rawCancel = offer?.policies?.cancellation;
+    let cancellation: HotelOffer['cancellation'] = undefined;
+    if (rawCancel) {
+      const cancelType = rawCancel.type === 'FULL_STAY' ? 'NON_REFUNDABLE' as const
+        : rawCancel.amount ? 'PARTIAL' as const
+        : 'FREE' as const;
+      cancellation = {
+        type: cancelType,
+        deadline: rawCancel.deadline || undefined,
+        fee: rawCancel.amount ? formatPrice(rawCancel.amount, currency) : undefined,
+      };
+    }
+
+    // Payment type
+    const paymentType = offer?.policies?.paymentType
+      ? offer.policies.paymentType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+      : undefined;
+
+    // Tax breakdown
+    const taxesArr = price?.taxes || [];
+    const taxTotal = taxesArr.reduce((sum: number, t: any) => sum + parseFloat(t.amount || '0'), 0);
+    const baseNum = totalNum - taxTotal;
+
     return {
-      name: hotel.hotel?.name || 'Hotel',
+      name: hotelName,
       rating: hotel.hotel?.rating ? parseInt(hotel.hotel.rating, 10) : 0,
       address: [hotel.hotel?.address?.lines?.[0], hotel.hotel?.address?.cityName]
         .filter(Boolean)
         .join(', ') || '',
-      pricePerNight: formatPrice(String(Math.round(totalNum / nights)), price?.currency || 'USD'),
-      totalPrice: formatPrice(price?.total || '0', price?.currency || 'USD'),
+      pricePerNight: formatPrice(String(Math.round(totalNum / nights)), currency),
+      totalPrice: formatPrice(price?.total || '0', currency),
       checkIn: params.checkIn,
       checkOut: params.checkOut,
-      amenities: (hotel.hotel?.amenities || []).slice(0, 6).map((a: string) =>
+      nights,
+      amenities: (hotel.hotel?.amenities || []).slice(0, 8).map((a: string) =>
         a.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
       ),
+      bookingUrl: buildHotelBookingUrl(hotelName, params.cityCode, params.checkIn, params.checkOut),
+      roomType: roomCategory,
+      bedType,
+      roomDescription,
+      boardType,
+      cancellation,
+      paymentType,
+      basePricePerNight: taxTotal > 0 ? formatPrice(String(Math.round(baseNum / nights)), currency) : undefined,
+      taxes: taxTotal > 0 ? formatPrice(String(Math.round(taxTotal)), currency) : undefined,
+      cityCode: params.cityCode,
     };
   });
 }

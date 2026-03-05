@@ -5,11 +5,13 @@ import remarkGfm from 'remark-gfm';
 import { PlaceCard } from './cards/PlaceCard';
 import { ColorSeasonCard } from './cards/ColorSeasonCard';
 import { FitnessClassCard } from './cards/FitnessClassCard';
+import type { FitnessClassCardData } from './cards/FitnessClassCard';
 import { FlightCard } from './cards/FlightCard';
 import { HotelCard } from './cards/HotelCard';
 import { WardrobeItemCard } from './cards/WardrobeItemCard';
 import { CheapestDatesCard } from './cards/CheapestDatesCard';
 import { useTravelStore } from '../../stores/travel';
+import { useFitnessStore } from '../../stores/fitness';
 
 interface MessageBubbleProps {
   message: Message;
@@ -120,20 +122,14 @@ function OutfitRatingCard({
 }
 
 function makeFlightLabel(data: any): string {
-  return `${data.airline || 'Flight'} ${data.departure?.city || ''} → ${data.arrival?.city || ''}`;
+  const base = `${data.airline || 'Flight'} ${data.departure?.city || ''} → ${data.arrival?.city || ''}`;
+  const flight = data.flightNumber ? ` ${data.flightNumber}` : '';
+  const time = data.departure?.time ? ` ${data.departure.time}` : '';
+  return `${base}${flight}${time}`;
 }
 
 function makeHotelLabel(data: any): string {
   return `${data.name || 'Hotel'} (${data.checkIn || ''} - ${data.checkOut || ''})`;
-}
-
-function buildTripSummary(selections: any[]): string {
-  const flights = selections.filter((s) => s.type === 'flight');
-  const hotels = selections.filter((s) => s.type === 'hotel');
-  const parts: string[] = [];
-  for (const f of flights) parts.push(`Flight: ${f.label} at ${f.data.price || '?'}`);
-  for (const h of hotels) parts.push(`Hotel: ${h.label} at ${h.data.totalPrice || h.data.pricePerNight || '?'}`);
-  return parts.join('\n');
 }
 
 function FlightCardWithSelection({
@@ -147,7 +143,6 @@ function FlightCardWithSelection({
 }) {
   const label = makeFlightLabel(data);
   const isSelected = useTravelStore((s) => s.profile.tripSelections.some((t) => t.label === label));
-  const selectionCount = useTravelStore((s) => s.profile.tripSelections.length);
 
   return (
     <FlightCard
@@ -168,15 +163,6 @@ function FlightCardWithSelection({
             data: flightData,
             label: flightLabel,
           });
-
-          // After selecting, check if we have enough to build an itinerary
-          const updated = store.profile.tripSelections;
-          const totalAfter = updated.length + 1; // +1 for the one we just added
-          if (totalAfter >= 2) {
-            const allSelections = [...updated, { type: 'flight' as const, data: flightData, label: flightLabel, id: '', selectedAt: '' }];
-            const summary = buildTripSummary(allSelections);
-            onAction?.(`I've selected these for my trip:\n${summary}\n\nPlease build me a trip itinerary! Include how far the hotel is from the airport, nearby restaurants people love, and any tips for the area.`);
-          }
         }
       }}
       onBookmark={(flightData) => {
@@ -230,14 +216,6 @@ function HotelCardWithSelection({
             data: hotelData,
             label: hotelLabel,
           });
-
-          const updated = store.profile.tripSelections;
-          const totalAfter = updated.length + 1;
-          if (totalAfter >= 2) {
-            const allSelections = [...updated, { type: 'hotel' as const, data: hotelData, label: hotelLabel, id: '', selectedAt: '' }];
-            const summary = buildTripSummary(allSelections);
-            onAction?.(`I've selected these for my trip:\n${summary}\n\nPlease build me a trip itinerary! Include how far the hotel is from the airport, nearby restaurants people love, and any tips for the area.`);
-          }
         }
       }}
       onBookmark={(hotelData) => {
@@ -245,6 +223,52 @@ function HotelCardWithSelection({
           type: 'hotel',
           data: hotelData,
           label: makeHotelLabel(hotelData),
+        });
+      }}
+    />
+  );
+}
+
+function makeFitnessLabel(data: FitnessClassCardData): string {
+  return `${data.className} — ${data.date} ${data.time} (${data.studioName})`;
+}
+
+function FitnessClassCardWithSelection({
+  data,
+  agentColor,
+}: {
+  data: FitnessClassCardData;
+  agentColor: string;
+}) {
+  const label = makeFitnessLabel(data);
+  const isScheduled = useFitnessStore((s) => s.profile.schedule.some((t) => t.label === label));
+
+  return (
+    <FitnessClassCard
+      data={data}
+      agentColor={agentColor}
+      isScheduled={isScheduled}
+      onSchedule={(classData) => {
+        const store = useFitnessStore.getState();
+        const classLabel = makeFitnessLabel(classData);
+        const alreadyScheduled = store.profile.schedule.some((s) => s.label === classLabel);
+
+        if (alreadyScheduled) {
+          const sel = store.profile.schedule.find((s) => s.label === classLabel);
+          if (sel) store.removeFromSchedule(sel.id);
+        } else {
+          store.addToSchedule({
+            type: 'class',
+            data: classData as any,
+            label: classLabel,
+          });
+        }
+      }}
+      onBookmark={(classData) => {
+        useFitnessStore.getState().addBookmark({
+          type: 'class',
+          data: classData as any,
+          label: makeFitnessLabel(classData),
         });
       }}
     />
@@ -325,7 +349,10 @@ export function MessageBubble({ message, onAction }: MessageBubbleProps) {
                 <ColorSeasonCard data={message.richCard.data} agentColor={agent.color} onAction={onAction} />
               )}
               {message.richCard.type === 'fitnessClass' && (
-                <FitnessClassCard data={message.richCard.data} agentColor={agent.color} />
+                <FitnessClassCardWithSelection
+                  data={message.richCard.data}
+                  agentColor={agent.color}
+                />
               )}
               {message.richCard.type === 'flight' && (
                 <FlightCardWithSelection

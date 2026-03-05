@@ -71,3 +71,30 @@ export interface RichCard {
   type: RichCardType;
   data: any;
 }
+
+// ── Navigation (agents + standalone tabs like Calendar) ───────────────
+
+export interface NavItem {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  path: string;
+}
+
+export const navItems: NavItem[] = [
+  ...Object.values(agents).map((a) => ({
+    id: a.id,
+    name: a.name,
+    icon: a.icon,
+    color: a.color,
+    path: a.id === 'all' ? '/' : `/${a.id}`,
+  })),
+  {
+    id: 'calendar',
+    name: 'Calendar',
+    icon: 'CalendarDays',
+    color: 'var(--accent-calendar)',
+    path: '/calendar',
+  },
+];

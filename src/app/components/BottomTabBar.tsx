@@ -1,57 +1,58 @@
 import { Link, useLocation } from 'react-router';
-import { Grid3x3, Palette, Plane, Dumbbell, Coffee } from 'lucide-react';
-import { AgentId, agents } from '../types';
+import { Grid3x3, Palette, Plane, Dumbbell, Coffee, CalendarDays } from 'lucide-react';
+import { navItems } from '../types';
 
-const iconMap = {
+const iconMap: Record<string, React.ComponentType<any>> = {
   Grid3x3,
   Palette,
   Plane,
   Dumbbell,
   Coffee,
+  CalendarDays,
 };
 
 export function BottomTabBar() {
   const location = useLocation();
-  
-  const getAgentIdFromPath = (path: string): AgentId => {
+
+  const getActiveId = (path: string): string => {
     if (path === '/') return 'all';
-    const agentId = path.slice(1) as AgentId;
-    return agentId in agents ? agentId : 'all';
+    return path.slice(1);
   };
-  
-  const activeAgentId = getAgentIdFromPath(location.pathname);
-  
+
+  const activeId = getActiveId(location.pathname);
+
   return (
-    <div 
+    <div
       className="fixed bottom-0 left-0 right-0 h-16 flex items-center justify-around border-t"
-      style={{ 
-        backgroundColor: 'var(--bg-surface)', 
-        borderColor: 'var(--bg-surface-elevated)' 
+      style={{
+        backgroundColor: 'var(--bg-surface)',
+        borderColor: 'var(--bg-surface-elevated)',
       }}
     >
-      {Object.values(agents).map((agent) => {
-        const Icon = iconMap[agent.icon as keyof typeof iconMap];
-        const isActive = activeAgentId === agent.id;
-        const path = agent.id === 'all' ? '/' : `/${agent.id}`;
-        
+      {navItems.map((item) => {
+        const Icon = iconMap[item.icon];
+        const isActive = activeId === item.id;
+
         return (
           <Link
-            key={agent.id}
-            to={path}
-            className="flex flex-col items-center justify-center w-16 h-full"
+            key={item.id}
+            to={item.path}
+            className="flex flex-col items-center justify-center flex-1 h-full"
           >
-            <Icon 
-              size={22}
-              style={{ 
-                color: isActive ? agent.color : 'var(--text-secondary)',
-                strokeWidth: isActive ? 2.5 : 2
-              }}
-            />
-            <span 
-              className="text-xs mt-1"
-              style={{ color: isActive ? agent.color : 'var(--text-secondary)' }}
+            {Icon && (
+              <Icon
+                size={22}
+                style={{
+                  color: isActive ? item.color : 'var(--text-secondary)',
+                  strokeWidth: isActive ? 2.5 : 2,
+                }}
+              />
+            )}
+            <span
+              className="text-[10px] mt-1"
+              style={{ color: isActive ? item.color : 'var(--text-secondary)' }}
             >
-              {agent.name}
+              {item.name}
             </span>
           </Link>
         );

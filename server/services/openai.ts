@@ -14,10 +14,12 @@ export async function* streamChat(
   agentId: string,
   messages: ChatMessage[],
   styleProfile?: object,
-  travelProfile?: object
+  travelProfile?: object,
+  fitnessProfile?: object,
+  userLocation?: object
 ): AsyncGenerator<string> {
   const config = getAgentConfig(agentId);
-  const systemPrompt = buildSystemPrompt(agentId, styleProfile, travelProfile);
+  const systemPrompt = buildSystemPrompt(agentId, styleProfile, travelProfile, fitnessProfile, userLocation);
 
   const openaiMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system' as const, content: systemPrompt },
@@ -122,9 +124,23 @@ export interface TravelIntent {
 
 export async function extractTravelParams(
   message: string,
-  context?: Array<{ role: string; content: string }>
+  context?: Array<{ role: string; content: string }>,
+  userLocation?: { city?: string; region?: string; country?: string; nearestAirport?: string; lat?: number; lng?: number; timezone?: string }
 ): Promise<TravelIntent> {
   const today = new Date().toISOString().split('T')[0];
+
+  let locationRules = '';
+  if (userLocation) {
+    if (userLocation.nearestAirport) {
+      locationRules += `\n- User's home airport is ${userLocation.nearestAirport} (${userLocation.city || 'unknown city'}). Use as default origin when user doesn't specify an origin.`;
+    }
+    if (userLocation.lat != null && userLocation.lng != null) {
+      locationRules += `\n- User's location is (${userLocation.lat}, ${userLocation.lng}). Use for POI searches when user says "near me" or doesn't specify a location.`;
+    }
+    if (userLocation.city) {
+      locationRules += `\n- User is in ${userLocation.city}${userLocation.region ? `, ${userLocation.region}` : ''}. Use this city name for "near me" textQuery in POI searches.`;
+    }
+  }
 
   const systemPrompt = `You extract structured travel search parameters from natural language. Today's date is ${today}.
 
@@ -139,8 +155,8 @@ For cheapest/flexible date searches:
 For hotels:
 {"type":"hotel_search","params":{"cityCode":"LON","checkIn":"2026-06-01","checkOut":"2026-06-05","adults":1}}
 
-For points of interest / things to do:
-{"type":"poi_search","params":{"latitude":51.5074,"longitude":-0.1278,"cityName":"London"}}
+For points of interest / things to do / restaurants / places:
+{"type":"poi_search","params":{"textQuery":"best sushi restaurants in Tokyo","latitude":35.6762,"longitude":139.6503,"cityName":"Tokyo","types":["restaurant"]}}
 
 For non-travel messages:
 {"type":"none","params":{}}
@@ -151,17 +167,21 @@ Rules:
 - Default adults to 1 if not specified
 - Default cabinClass to "ECONOMY" if not specified
 - Default nonStop to false. Set to true ONLY when user says "nonstop", "non-stop", "direct", or "no stops"
-- For hotels without dates, use tomorrow +3 nights
+- For hotels, ONLY return "hotel_search" if the user has specified BOTH dates (or length of stay) AND number of guests. If either is missing, return {"type":"none","params":{}} so the agent can ask for the missing info
+- When the user provides number of nights (e.g. "3 nights"), compute checkIn as tomorrow and checkOut accordingly
 - For POIs, use well-known city center coordinates
 - returnDate is optional (omit for one-way)
 - Only return "flight_search" if the user mentions flights, flying, airfare, or is refining a previous flight search (e.g. "show me nonstop only", "find cheaper flights")
 - Only return "hotel_search" if the user mentions hotels, accommodation, stay, lodging
-- Only return "poi_search" if the user mentions things to do, attractions, sightseeing, places, activities
+- Only return "poi_search" if the user mentions things to do, attractions, sightseeing, places, activities, restaurants, cafes, bars, nightlife, museums, parks, shopping, food, eat, drink
+- For poi_search, ALWAYS include a "textQuery" that is a natural language search phrase (e.g. "best Italian restaurants in Rome", "things to do in Paris", "coffee shops near Times Square")
+- For poi_search, include city center coordinates as latitude/longitude when a city is mentioned
+- For poi_search, map categories to Google Places types: restaurants→["restaurant"], cafes/coffee→["cafe"], museums→["museum"], bars/nightlife→["bar","night_club"], parks→["park"], shopping→["shopping_mall","clothing_store"], hotels→["lodging"]. For general/mixed queries, omit types
 - "flights under $500" or "budget flights under 400" → set maxPrice to the number (e.g. 500, 400)
 - "Delta flights only" or "only fly American" → set includedAirlineCodes to IATA codes (e.g. ["DL"], ["AA"])
 - "no Spirit" or "avoid Frontier" → set excludedAirlineCodes to IATA codes (e.g. ["NK"], ["F9"])
 - "cheapest dates to fly" / "flexible dates" / "when is cheapest to fly" / "cheapest time to fly" → type "cheapest_dates"
-- IMPORTANT: For follow-up messages that refine a previous search (e.g. "only nonstop", "make it business class", "try a different date"), look at the conversation context to carry forward the origin, destination, dates, and other params from the previous search, then apply the user's refinement`;
+- IMPORTANT: For follow-up messages that refine a previous search (e.g. "only nonstop", "make it business class", "try a different date"), look at the conversation context to carry forward the origin, destination, dates, and other params from the previous search, then apply the user's refinement${locationRules}`;
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -189,6 +209,89 @@ Rules:
   const text = response.choices[0]?.message?.content ?? '{}';
 
   // Extract JSON from possible markdown code fences
+  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, text];
+  const raw = jsonMatch[1]!.trim();
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const objectMatch = raw.match(/\{[\s\S]*\}/);
+    if (objectMatch) {
+      return JSON.parse(objectMatch[0]);
+    }
+    return { type: 'none', params: {} };
+  }
+}
+
+// ── Fitness intent extraction ─────────────────────────────────────────
+
+export interface FitnessIntent {
+  type: 'class_search' | 'none';
+  params: Record<string, any>;
+}
+
+export async function extractFitnessParams(
+  message: string,
+  context?: Array<{ role: string; content: string }>,
+  userLocation?: { city?: string; region?: string; lat?: number; lng?: number }
+): Promise<FitnessIntent> {
+  const today = new Date().toISOString().split('T')[0];
+
+  let locationRules = '';
+  if (userLocation) {
+    if (userLocation.city) {
+      locationRules += `\n- User is in ${userLocation.city}${userLocation.region ? `, ${userLocation.region}` : ''}. Use for "near me" class searches.`;
+    }
+    if (userLocation.lat != null && userLocation.lng != null) {
+      locationRules += `\n- User's coordinates: (${userLocation.lat}, ${userLocation.lng}). Use for location-based class searches.`;
+    }
+  }
+
+  const systemPrompt = `You extract structured fitness class search parameters from natural language. Today's date is ${today}.
+
+Return ONLY valid JSON in one of these formats:
+
+For fitness class searches:
+{"type":"class_search","params":{"classType":"yoga","startDate":"2026-03-06","endDate":"2026-03-13","timeOfDay":"morning","difficulty":null}}
+
+For non-fitness messages:
+{"type":"none","params":{}}
+
+Rules:
+- Normalize class types to one of: yoga, pilates, hiit, spinning, barre, boxing, strength, dance, stretch, meditation, cardio, bootcamp
+- Parse relative dates: "tomorrow" → next day, "this week" → today through Sunday, "next week" → next Monday through Sunday
+- Default to a 7-day window if no date range specified (startDate = today, endDate = today + 7 days)
+- timeOfDay: "morning" (5am-12pm), "afternoon" (12pm-5pm), "evening" (5pm-11pm). Only set when user mentions a time preference.
+- difficulty: extract if mentioned ("beginner", "intermediate", "advanced"), otherwise null
+- Only return "class_search" if the user mentions fitness classes, workouts, yoga, pilates, gym classes, studios, training sessions, or similar fitness-related searches
+- Return "none" for: general fitness advice, workout plans, nutrition questions, motivation, or anything not about searching/finding classes
+- IMPORTANT: Do NOT extract intent for travel, fashion, or general lifestyle topics — those belong to other agents. Return {"type":"none","params":{}} for anything outside fitness class discovery.
+- For follow-up messages refining a previous search (e.g. "try evening instead", "what about pilates"), look at conversation context to carry forward parameters${locationRules}`;
+
+  const messages: import('openai').default.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt },
+  ];
+
+  if (context?.length) {
+    for (const msg of context.slice(-4)) {
+      messages.push({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+      });
+    }
+  }
+
+  messages.push({ role: 'user', content: message });
+
+  const response = await openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL || 'gpt-4o',
+    messages,
+    temperature: 0.1,
+    max_tokens: 500,
+  });
+
+  const text = response.choices[0]?.message?.content ?? '{}';
+
   const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, text];
   const raw = jsonMatch[1]!.trim();
 

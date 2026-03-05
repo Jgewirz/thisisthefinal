@@ -5,6 +5,9 @@ import { runMigrations } from './db/migrate.js';
 import chatRouter from './routes/chat.js';
 import styleRouter from './routes/style.js';
 import travelRouter from './routes/travel.js';
+import fitnessRouter from './routes/fitness.js';
+import locationRouter from './routes/location.js';
+import calendarRouter from './routes/calendar.js';
 
 // Initialize SQLite + run migrations before anything else
 runMigrations();
@@ -23,13 +26,16 @@ app.use((req, _res, next) => {
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', agents: ['style', 'travel', 'fitness', 'lifestyle'] });
+  res.json({ status: 'ok', agents: ['style', 'travel', 'fitness', 'lifestyle', 'calendar'] });
 });
 
 // Routes
 app.use('/api/chat', chatRouter);
 app.use('/api/style', styleRouter);
 app.use('/api/travel', travelRouter);
+app.use('/api/fitness', fitnessRouter);
+app.use('/api/location', locationRouter);
+app.use('/api/calendar', calendarRouter);
 
 // Global error handler — prevents raw stack traces from leaking to the client
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

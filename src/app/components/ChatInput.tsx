@@ -2,6 +2,8 @@ import { Paperclip, MapPin, Send, X, Camera, Palette, Shirt, Tag } from 'lucide-
 import { AgentId, agents } from '../types';
 import { useState, useRef, useCallback } from 'react';
 import { compressImage } from '../../lib/image';
+import { useLocationStore } from '../../stores/location';
+import { toast } from 'sonner';
 
 interface ChatInputProps {
   agentId: AgentId;
@@ -30,6 +32,25 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
   const actions = quickActions[agentId];
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const locationStore = useLocationStore();
+
+  const handleLocationRequest = useCallback(async () => {
+    try {
+      await locationStore.requestLocation();
+      const loc = useLocationStore.getState().location;
+      if (loc?.city && loc.region) {
+        toast.success(`Location set: ${loc.city}, ${loc.region}`);
+      } else if (loc) {
+        toast.success('Location updated');
+      }
+      const err = useLocationStore.getState().error;
+      if (err) {
+        toast.error(err);
+      }
+    } catch {
+      toast.error('Failed to get location');
+    }
+  }, [locationStore]);
 
   const handleSubmit = useCallback(() => {
     const text = message.trim();
@@ -95,6 +116,9 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
   const clearPendingImage = useCallback(() => {
     setPendingImage(null);
   }, []);
+
+  const locationLoading = locationStore.isRequesting;
+  const hasLocation = !!locationStore.location;
 
   const showImageIntentChips = pendingImage && agentId === 'style';
 
@@ -218,10 +242,16 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
             </button>
           ) : (
             <button
-              className="p-2 rounded-lg hover:bg-opacity-50 transition-colors"
+              onClick={handleLocationRequest}
+              disabled={locationLoading}
+              className="p-2 rounded-lg hover:bg-opacity-50 transition-colors disabled:opacity-50"
               style={{ backgroundColor: 'transparent' }}
+              title={hasLocation ? `Location: ${locationStore.location!.city || 'Set'}, ${locationStore.location!.region || ''}` : 'Share your location'}
             >
-              <MapPin size={20} style={{ color: 'var(--text-secondary)' }} />
+              <MapPin
+                size={20}
+                style={{ color: hasLocation ? agent.color : 'var(--text-secondary)' }}
+              />
             </button>
           )}
         </div>

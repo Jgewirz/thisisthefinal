@@ -1,4 +1,4 @@
-import { Plane, Clock, Luggage, Wifi, Plug, MonitorPlay, Bookmark, ArrowRight, Users, Check } from 'lucide-react';
+import { Plane, Clock, Luggage, Wifi, Plug, MonitorPlay, Bookmark, ArrowRight, Users, Check, ExternalLink } from 'lucide-react';
 
 interface FlightSegment {
   flightNumber: string;
@@ -404,6 +404,22 @@ export function FlightCard({ data, agentColor, isSelected, onSelect, onBookmark 
             </div>
           )}
           <div className="flex items-center gap-2">
+            {data.bookingUrl && (
+              <a
+                href={data.bookingUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 rounded-full transition-colors text-sm flex items-center gap-1 border"
+                style={{
+                  borderColor: agentColor + '40',
+                  color: agentColor,
+                  backgroundColor: 'transparent',
+                }}
+              >
+                <ExternalLink size={14} />
+                Book
+              </a>
+            )}
             {onBookmark && (
               <button
                 onClick={() => onBookmark(data)}

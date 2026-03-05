@@ -4,11 +4,15 @@ import { extractTravelParams } from '../services/openai.js';
 import {
   searchFlights,
   searchHotels,
-  searchPOIs,
   searchCheapestDates,
   autocompleteLocation,
   isAmadeusConfigured,
 } from '../services/amadeus.js';
+import {
+  searchPlaces,
+  fetchPlacePhoto,
+  isGooglePlacesConfigured,
+} from '../services/google-places.js';
 import { getDb } from '../db/sqlite.js';
 
 const router = Router();
@@ -21,9 +25,10 @@ function ensureUser(userId: string) {
 
 // ── POST /api/travel/extract — GPT extracts structured params ──────────
 router.post('/extract', async (req: Request, res: Response) => {
-  const { message, context } = req.body as {
+  const { message, context, userLocation } = req.body as {
     message: string;
     context?: Array<{ role: string; content: string }>;
+    userLocation?: object;
   };
 
   if (!message) {
@@ -32,7 +37,7 @@ router.post('/extract', async (req: Request, res: Response) => {
   }
 
   try {
-    const intent = await extractTravelParams(message, context);
+    const intent = await extractTravelParams(message, context, userLocation as any);
     res.json({ intent });
   } catch (err: any) {
     console.error('Travel extraction error:', err.message);
@@ -167,17 +172,17 @@ router.post('/hotels', async (req: Request, res: Response) => {
   }
 });
 
-// ── POST /api/travel/pois — Amadeus POI search ────────────────────────
+// ── POST /api/travel/pois — Google Places search ──────────────────────
 router.post('/pois', async (req: Request, res: Response) => {
-  if (!isAmadeusConfigured()) {
-    res.status(503).json({ error: 'Amadeus API not configured' });
+  if (!isGooglePlacesConfigured()) {
+    res.status(503).json({ error: 'Google Places API not configured' });
     return;
   }
 
-  const { latitude, longitude, radius, categories } = req.body;
+  const { textQuery, latitude, longitude, radius, types, cityName } = req.body;
 
-  if (latitude == null || longitude == null) {
-    res.status(400).json({ error: 'latitude and longitude are required' });
+  if (!textQuery && latitude == null && longitude == null) {
+    res.status(400).json({ error: 'textQuery or latitude/longitude required' });
     return;
   }
 
@@ -185,7 +190,7 @@ router.post('/pois', async (req: Request, res: Response) => {
     const userId = (req as any).userId as string;
     ensureUser(userId);
 
-    const results = await searchPOIs({ latitude, longitude, radius, categories });
+    const results = await searchPlaces({ textQuery, latitude, longitude, radius, types, cityName });
 
     const db = getDb();
     db.prepare(
@@ -194,7 +199,7 @@ router.post('/pois', async (req: Request, res: Response) => {
       crypto.randomUUID(),
       userId,
       'poi_search',
-      JSON.stringify({ latitude, longitude, radius }),
+      JSON.stringify({ textQuery, latitude, longitude, radius, types, cityName }),
       results.length
     );
 
@@ -202,6 +207,27 @@ router.post('/pois', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('POI search error:', err.message);
     res.status(500).json({ error: 'POI search failed' });
+  }
+});
+
+// ── GET /api/travel/places/photo — proxy Google Places photos ─────────
+router.get('/places/photo', async (req: Request, res: Response) => {
+  const ref = req.query.ref as string;
+  if (!ref) {
+    res.status(400).json({ error: 'ref parameter is required' });
+    return;
+  }
+
+  try {
+    const { buffer, contentType } = await fetchPlacePhoto(ref);
+    res.set({
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=86400', // 24h cache
+    });
+    res.send(buffer);
+  } catch (err: any) {
+    console.error('Photo proxy error:', err.message);
+    res.status(502).json({ error: 'Failed to fetch photo' });
   }
 });
 
@@ -363,6 +389,33 @@ router.post('/trip-selections', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Add trip selection error:', err.message);
     res.status(500).json({ error: 'Failed to add trip selection' });
+  }
+});
+
+// ── GET /api/travel/trip-selections/:id — get a single selection ───────
+router.get('/trip-selections/:id', (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId as string;
+    const db = getDb();
+    const row = db.prepare(
+      'SELECT id, type, data, label, selected_at FROM trip_selections WHERE id = ? AND user_id = ?'
+    ).get(req.params.id, userId) as any;
+
+    if (!row) {
+      res.status(404).json({ error: 'Trip selection not found' });
+      return;
+    }
+
+    res.json({
+      id: row.id,
+      type: row.type,
+      data: JSON.parse(row.data),
+      label: row.label,
+      selectedAt: row.selected_at,
+    });
+  } catch (err: any) {
+    console.error('Get trip selection error:', err.message);
+    res.status(500).json({ error: 'Failed to get trip selection' });
   }
 });
 

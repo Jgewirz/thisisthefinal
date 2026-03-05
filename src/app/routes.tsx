@@ -1,31 +1,36 @@
 import { createBrowserRouter } from "react-router";
 import { Root } from "./components/Root";
 import { ChatView } from "./components/ChatView";
+import { CalendarView } from "./components/CalendarView";
 
 export const router = createBrowserRouter([
   {
     path: "/",
     Component: Root,
     children: [
-      { 
-        index: true, 
+      {
+        index: true,
         Component: () => <ChatView agentId="all" />
       },
-      { 
-        path: "style", 
+      {
+        path: "style",
         Component: () => <ChatView agentId="style" />
       },
-      { 
-        path: "travel", 
+      {
+        path: "travel",
         Component: () => <ChatView agentId="travel" />
       },
-      { 
-        path: "fitness", 
+      {
+        path: "fitness",
         Component: () => <ChatView agentId="fitness" />
       },
-      { 
-        path: "lifestyle", 
+      {
+        path: "lifestyle",
         Component: () => <ChatView agentId="lifestyle" />
+      },
+      {
+        path: "calendar",
+        Component: CalendarView,
       },
     ],
   },
