@@ -226,7 +226,7 @@ Rules:
 // ── Fitness intent extraction ─────────────────────────────────────────
 
 export interface FitnessIntent {
-  type: 'class_search' | 'none';
+  type: 'studio_search' | 'none';
   params: Record<string, any>;
 }
 
@@ -240,33 +240,31 @@ export async function extractFitnessParams(
   let locationRules = '';
   if (userLocation) {
     if (userLocation.city) {
-      locationRules += `\n- User is in ${userLocation.city}${userLocation.region ? `, ${userLocation.region}` : ''}. Use for "near me" class searches.`;
+      locationRules += `\n- User is in ${userLocation.city}${userLocation.region ? `, ${userLocation.region}` : ''}. Use for "near me" searches.`;
     }
     if (userLocation.lat != null && userLocation.lng != null) {
-      locationRules += `\n- User's coordinates: (${userLocation.lat}, ${userLocation.lng}). Use for location-based class searches.`;
+      locationRules += `\n- User's coordinates: (${userLocation.lat}, ${userLocation.lng}). Include as userLat/userLng for proximity-based results.`;
     }
   }
 
-  const systemPrompt = `You extract structured fitness class search parameters from natural language. Today's date is ${today}.
+  const systemPrompt = `You extract structured fitness studio/gym search parameters from natural language. Today's date is ${today}.
 
 Return ONLY valid JSON in one of these formats:
 
-For fitness class searches:
-{"type":"class_search","params":{"classType":"yoga","startDate":"2026-03-06","endDate":"2026-03-13","timeOfDay":"morning","difficulty":null}}
+For fitness studio/gym searches:
+{"type":"studio_search","params":{"classType":"yoga","cityName":"Austin","userLat":30.27,"userLng":-97.74}}
 
 For non-fitness messages:
 {"type":"none","params":{}}
 
 Rules:
-- Normalize class types to one of: yoga, pilates, hiit, spinning, barre, boxing, strength, dance, stretch, meditation, cardio, bootcamp
-- Parse relative dates: "tomorrow" → next day, "this week" → today through Sunday, "next week" → next Monday through Sunday
-- Default to a 7-day window if no date range specified (startDate = today, endDate = today + 7 days)
-- timeOfDay: "morning" (5am-12pm), "afternoon" (12pm-5pm), "evening" (5pm-11pm). Only set when user mentions a time preference.
-- difficulty: extract if mentioned ("beginner", "intermediate", "advanced"), otherwise null
-- Only return "class_search" if the user mentions fitness classes, workouts, yoga, pilates, gym classes, studios, training sessions, or similar fitness-related searches
-- Return "none" for: general fitness advice, workout plans, nutrition questions, motivation, or anything not about searching/finding classes
-- IMPORTANT: Do NOT extract intent for travel, fashion, or general lifestyle topics — those belong to other agents. Return {"type":"none","params":{}} for anything outside fitness class discovery.
-- For follow-up messages refining a previous search (e.g. "try evening instead", "what about pilates"), look at conversation context to carry forward parameters${locationRules}`;
+- classType: normalize to one of: yoga, pilates, hiit, spinning, barre, boxing, strength, dance, stretch, meditation, cardio, bootcamp, crossfit, martial arts, swimming, climbing, cycling. If not specific, use "fitness"
+- cityName: extract city name if user mentions a location, otherwise omit
+- userLat/userLng: include the user's coordinates if available (from location rules below) for "near me" searches
+- Only return "studio_search" if the user mentions fitness classes, workouts, yoga, pilates, gym, studio, training, or similar fitness-related discovery
+- Return "none" for: general fitness advice, workout plans, nutrition questions, motivation, or anything not about finding gyms/studios/classes
+- IMPORTANT: Do NOT extract intent for travel, fashion, or general lifestyle topics — those belong to other agents
+- For follow-up messages refining a previous search (e.g. "try pilates instead", "what about boxing"), look at conversation context to carry forward parameters${locationRules}`;
 
   const messages: import('openai').default.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },

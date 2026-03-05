@@ -654,21 +654,21 @@ async function runFitnessSearch(
 
     if (!intent || intent.type === 'none') return null;
 
-    // Step 2: Call Mindbody class search
-    if (intent.type === 'class_search') {
+    // Step 2: Search for gyms/studios via Google Places
+    if (intent.type === 'studio_search') {
       // Learn preferred class type
       if (intent.params.classType) {
         useFitnessStore.getState().addPreferredClassType(intent.params.classType);
       }
 
-      // Attach user location if available so results are sorted by distance
+      // Attach user location if available for proximity-based results
       const location = useFitnessStore.getState().profile.homeLocation;
       const searchParams = {
         ...intent.params,
-        ...(location ? { userLat: location.lat, userLng: location.lng } : {}),
+        ...(location && !intent.params.userLat ? { userLat: location.lat, userLng: location.lng } : {}),
       };
 
-      const res = await fetchWithTimeout('/api/fitness/classes', {
+      const res = await fetchWithTimeout('/api/fitness/search', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -686,12 +686,12 @@ async function runFitnessSearch(
       useFitnessStore.getState().addRecentSearch({
         type: 'class_search',
         params: intent.params,
-        label: `${intent.params.classType || 'Fitness'} classes${intent.params.timeOfDay ? ` (${intent.params.timeOfDay})` : ''}`,
+        label: `${intent.params.classType || 'Fitness'} studios${intent.params.cityName ? ` in ${intent.params.cityName}` : ' nearby'}`,
       });
 
-      return results.map((cls: any): RichCard => ({
-        type: 'fitnessClass',
-        data: cls,
+      return results.map((place: any): RichCard => ({
+        type: 'place',
+        data: place,
       }));
     }
 

@@ -1,11 +1,7 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { extractFitnessParams } from '../services/openai.js';
-import {
-  searchClasses,
-  getLocations,
-  isMindbodyConfigured,
-} from '../services/mindbody.js';
+import { searchPlaces, isGooglePlacesConfigured } from '../services/google-places.js';
 import { getDb } from '../db/sqlite.js';
 
 const router = Router();
@@ -38,28 +34,28 @@ router.post('/extract', async (req: Request, res: Response) => {
   }
 });
 
-// ── POST /api/fitness/classes — Mindbody class search ──────────────────
-router.post('/classes', async (req: Request, res: Response) => {
-  if (!isMindbodyConfigured()) {
-    res.status(503).json({ error: 'Mindbody API not configured' });
+// ── POST /api/fitness/search — Google Places gym/studio discovery ──────
+router.post('/search', async (req: Request, res: Response) => {
+  if (!isGooglePlacesConfigured()) {
+    res.status(503).json({ error: 'Google Places API not configured — set GOOGLE_PLACES_API_KEY' });
     return;
   }
 
-  const { classType, startDate, endDate, timeOfDay, difficulty, staffId, locationId, userLat, userLng } = req.body;
+  const { classType, userLat, userLng, cityName } = req.body;
 
   try {
     const userId = (req as any).userId as string;
     ensureUser(userId);
 
-    const results = await searchClasses({
-      classType,
-      startDate,
-      endDate,
-      timeOfDay,
-      staffId,
-      locationId,
-      userLat,
-      userLng,
+    // Build a search query for gyms/studios offering the requested class type
+    const queryParts = [classType || 'fitness', 'classes near me'];
+    if (cityName) queryParts.push(`in ${cityName}`);
+
+    const results = await searchPlaces({
+      textQuery: queryParts.join(' '),
+      latitude: userLat,
+      longitude: userLng,
+      cityName,
     });
 
     // Log the search
@@ -69,31 +65,15 @@ router.post('/classes', async (req: Request, res: Response) => {
     ).run(
       crypto.randomUUID(),
       userId,
-      'class_search',
-      JSON.stringify({ classType, startDate, endDate, timeOfDay, difficulty }),
+      'studio_search',
+      JSON.stringify({ classType, cityName }),
       results.length
     );
 
     res.json({ results });
   } catch (err: any) {
-    console.error('Fitness class search error:', err.message);
-    res.status(500).json({ error: 'Class search failed' });
-  }
-});
-
-// ── GET /api/fitness/locations — Mindbody studio locations ─────────────
-router.get('/locations', async (_req: Request, res: Response) => {
-  if (!isMindbodyConfigured()) {
-    res.status(503).json({ error: 'Mindbody API not configured' });
-    return;
-  }
-
-  try {
-    const results = await getLocations();
-    res.json({ results });
-  } catch (err: any) {
-    console.error('Fitness locations error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch locations' });
+    console.error('Fitness search error:', err.message);
+    res.status(500).json({ error: 'Studio search failed' });
   }
 });
 
