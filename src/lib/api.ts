@@ -158,6 +158,34 @@ const FITNESS_SEARCH_REFINEMENTS = [
 const FITNESS_LOCATION_CUES = ['near me', 'nearby', 'around me', 'in my area'];
 const FITNESS_TIME_CUES = ['today', 'tomorrow', 'this week', 'next week', 'this weekend', 'weekend'];
 const FITNESS_VENUE_CUES = ['gym', 'studio', 'class', 'classes'];
+const SHARED_LOCATION_CUES = ['near me', 'nearby', 'around me', 'in my area', 'close to me', 'walking distance'];
+const PLACE_DISCOVERY_TERMS = [
+  'restaurant',
+  'restaurants',
+  'cafe',
+  'coffee',
+  'bar',
+  'bars',
+  'museum',
+  'museums',
+  'park',
+  'parks',
+  'shopping',
+  'mall',
+  'things to do',
+  'attractions',
+  'activities',
+  'places to visit',
+  'food',
+  'eat',
+  'drink',
+  'brunch',
+  'hotel',
+  'hotels',
+  'stay',
+  'lodging',
+];
+const PLACE_SEARCH_ACTIONS = ['find', 'search', 'show me', 'recommend', 'where can i', 'what are', 'best'];
 
 function shouldRunFitnessSearch(userText: string): boolean {
   const normalized = userText.toLowerCase().trim();
@@ -182,6 +210,54 @@ function shouldRunFitnessSearch(userText: string): boolean {
   const recentFitnessSearches = useFitnessStore.getState().profile.recentSearches;
   const isRefinement = FITNESS_SEARCH_REFINEMENTS.some((term) => normalized.includes(term));
   return recentFitnessSearches.length > 0 && isRefinement;
+}
+
+function needsCurrentLocation(userText: string): boolean {
+  const normalized = userText.toLowerCase();
+  return SHARED_LOCATION_CUES.some((term) => normalized.includes(term));
+}
+
+function shouldRunSharedPlaceSearch(userText: string): boolean {
+  const normalized = userText.toLowerCase().trim();
+  if (!normalized) return false;
+
+  const hasLocationCue = needsCurrentLocation(normalized);
+  const hasDiscoveryTerm = PLACE_DISCOVERY_TERMS.some((term) => normalized.includes(term));
+  const hasSearchAction = PLACE_SEARCH_ACTIONS.some((term) => normalized.includes(term));
+
+  return (hasLocationCue && hasDiscoveryTerm) || (hasSearchAction && hasDiscoveryTerm);
+}
+
+async function ensureLocationForSearchQuery(userText: string): Promise<void> {
+  if (!needsCurrentLocation(userText)) return;
+
+  const locationStore = useLocationStore.getState();
+  if (locationStore.location || locationStore.isRequesting) return;
+
+  try {
+    await locationStore.requestLocation();
+  } catch {
+    // Fall back to non-location search behavior if the browser denies access.
+  }
+}
+
+function appendRichCards(agentId: AgentId, cards: RichCard[]) {
+  const store = useChatStore.getState();
+  if (!cards.length) return;
+
+  store.setRichCardOnLastBot(agentId, cards[0]);
+
+  for (let i = 1; i < cards.length; i++) {
+    const cardMsg: Message = {
+      id: crypto.randomUUID(),
+      type: 'bot',
+      text: '',
+      timestamp: new Date(),
+      agentId,
+      richCard: cards[i],
+    };
+    store.addMessage(agentId, cardMsg);
+  }
 }
 
 /** Fetch with a timeout to prevent indefinite hangs */
@@ -345,6 +421,16 @@ export async function sendMessage(
       fitnessPromise = runFitnessSearch(text, agentId, recentContext);
     }
 
+    let sharedPlacePromise: Promise<RichCard[] | null> | null = null;
+    if (effectiveAgent === 'lifestyle' && shouldRunSharedPlaceSearch(text)) {
+      store.setAnalyzing(agentId, true);
+      const recentContext = apiMessages.slice(-6).map((m) => ({
+        role: m.role as string,
+        content: typeof m.content === 'string' ? m.content : '',
+      }));
+      sharedPlacePromise = runSharedPlaceSearch(text, recentContext);
+    }
+
     // Stream the conversational response
     const res = await fetchWithTimeout('/api/chat', {
       method: 'POST',
@@ -388,21 +474,7 @@ export async function sendMessage(
       try {
         const cards = await travelPromise;
         if (cards && cards.length > 0) {
-          // Attach first card to the existing bot message
-          store.setRichCardOnLastBot(agentId, cards[0]);
-
-          // Add remaining cards as separate bot messages
-          for (let i = 1; i < cards.length; i++) {
-            const cardMsg: Message = {
-              id: crypto.randomUUID(),
-              type: 'bot',
-              text: '',
-              timestamp: new Date(),
-              agentId,
-              richCard: cards[i],
-            };
-            store.addMessage(agentId, cardMsg);
-          }
+          appendRichCards(agentId, cards);
         }
       } finally {
         store.setAnalyzing(agentId, false);
@@ -414,19 +486,18 @@ export async function sendMessage(
       try {
         const cards = await fitnessPromise;
         if (cards && cards.length > 0) {
-          store.setRichCardOnLastBot(agentId, cards[0]);
+          appendRichCards(agentId, cards);
+        }
+      } finally {
+        store.setAnalyzing(agentId, false);
+      }
+    }
 
-          for (let i = 1; i < cards.length; i++) {
-            const cardMsg: Message = {
-              id: crypto.randomUUID(),
-              type: 'bot',
-              text: '',
-              timestamp: new Date(),
-              agentId,
-              richCard: cards[i],
-            };
-            store.addMessage(agentId, cardMsg);
-          }
+    if (sharedPlacePromise) {
+      try {
+        const cards = await sharedPlacePromise;
+        if (cards && cards.length > 0) {
+          appendRichCards(agentId, cards);
         }
       } finally {
         store.setAnalyzing(agentId, false);
@@ -587,6 +658,8 @@ async function runTravelSearch(
   context?: Array<{ role: string; content: string }>
 ): Promise<RichCard[] | null> {
   try {
+    await ensureLocationForSearchQuery(userText);
+
     // Step 1: Extract structured intent from user text (with conversation context for follow-ups)
     const extractRes = await fetchWithTimeout('/api/travel/extract', {
       method: 'POST',
@@ -727,6 +800,50 @@ async function runTravelSearch(
   }
 }
 
+async function runSharedPlaceSearch(
+  userText: string,
+  context?: Array<{ role: string; content: string }>
+): Promise<RichCard[] | null> {
+  try {
+    await ensureLocationForSearchQuery(userText);
+
+    const extractRes = await fetchWithTimeout('/api/travel/extract', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
+    });
+
+    if (!extractRes.ok) return null;
+    const { intent } = await extractRes.json();
+
+    if (!intent || intent.type !== 'poi_search') return null;
+
+    const { textQuery, latitude, longitude, radius, types, cityName } = intent.params;
+
+    const res = await fetchWithTimeout('/api/travel/pois', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ textQuery, latitude, longitude, radius, types, cityName }),
+    });
+
+    if (!res.ok) return null;
+    const { results } = await res.json();
+
+    if (!results?.length) return null;
+
+    return results.map((poi: any): RichCard => ({
+      type: 'place',
+      data: poi,
+    }));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Build a lean fitness profile for the chat system prompt.
  */
@@ -758,6 +875,8 @@ async function runFitnessSearch(
   context?: Array<{ role: string; content: string }>
 ): Promise<RichCard[] | null> {
   try {
+    await ensureLocationForSearchQuery(userText);
+
     // Step 1: Extract structured intent (fitness-only extraction)
     const extractRes = await fetchWithTimeout('/api/fitness/extract', {
       method: 'POST',
