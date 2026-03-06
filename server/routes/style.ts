@@ -206,6 +206,107 @@ router.post('/wardrobe', async (req: Request, res: Response) => {
   }
 });
 
+// ── POST /api/style/wardrobe/import — import existing CDN-backed items ──────
+router.post('/wardrobe/import', (req: Request, res: Response) => {
+  const userId = (req as any).userId as string;
+  const { items } = req.body as {
+    items?: Array<{
+      imageUrl: string;
+      thumbnailUrl?: string;
+      category: string;
+      color: string;
+      colorHex: string;
+      style: string;
+      seasons?: string[];
+      occasions?: string[];
+      pairsWith?: string[];
+      addedAt?: string;
+    }>;
+  };
+
+  if (!Array.isArray(items)) {
+    res.status(400).json({ error: 'items must be an array' });
+    return;
+  }
+
+  try {
+    ensureUser(userId);
+    const db = getDb();
+    const insert = db.prepare(`INSERT INTO wardrobe_items
+      (id, user_id, image_url, thumbnail_url, cloudinary_public_id, category, color, color_hex, style, seasons, occasions, pairs_with, added_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+    const imported: any[] = [];
+    const runImport = db.transaction((sourceItems: typeof items) => {
+      for (const item of sourceItems) {
+        if (!item?.imageUrl || !item.category || !item.color || !item.colorHex || !item.style) {
+          continue;
+        }
+
+        const duplicate = db.prepare(
+          'SELECT id FROM wardrobe_items WHERE user_id = ? AND image_url = ? AND category = ?'
+        ).get(userId, item.imageUrl, item.category) as any;
+
+        if (duplicate) {
+          const existing = db.prepare('SELECT * FROM wardrobe_items WHERE id = ?').get(duplicate.id) as any;
+          imported.push({
+            id: existing.id,
+            imageUrl: existing.image_url,
+            thumbnailUrl: existing.thumbnail_url,
+            category: existing.category,
+            color: existing.color,
+            colorHex: existing.color_hex,
+            style: existing.style,
+            seasons: JSON.parse(existing.seasons),
+            occasions: JSON.parse(existing.occasions),
+            pairsWith: JSON.parse(existing.pairs_with),
+            addedAt: existing.added_at,
+          });
+          continue;
+        }
+
+        const id = crypto.randomUUID();
+        const addedAt = item.addedAt || new Date().toISOString();
+        insert.run(
+          id,
+          userId,
+          item.imageUrl,
+          item.thumbnailUrl || null,
+          null,
+          item.category,
+          item.color,
+          item.colorHex,
+          item.style,
+          JSON.stringify(item.seasons || []),
+          JSON.stringify(item.occasions || []),
+          JSON.stringify(item.pairsWith || []),
+          addedAt
+        );
+
+        imported.push({
+          id,
+          imageUrl: item.imageUrl,
+          thumbnailUrl: item.thumbnailUrl,
+          category: item.category,
+          color: item.color,
+          colorHex: item.colorHex,
+          style: item.style,
+          seasons: item.seasons || [],
+          occasions: item.occasions || [],
+          pairsWith: item.pairsWith || [],
+          addedAt,
+        });
+      }
+    });
+
+    runImport(items);
+    res.json({ items: imported });
+  } catch (err: any) {
+    console.error('Wardrobe import error:', err.message);
+    res.status(500).json({ error: 'Failed to import wardrobe items' });
+  }
+});
+
 // ── GET /api/style/wardrobe — list items ───────────────────────────────
 router.get('/wardrobe', (req: Request, res: Response) => {
   const userId = (req as any).userId as string;

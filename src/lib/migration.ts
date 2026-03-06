@@ -1,5 +1,4 @@
 import { useStyleStore } from '../stores/style';
-import { getUserId } from './session';
 
 const MIGRATION_KEY = 'girlbot-wardrobe-migrated';
 
@@ -29,7 +28,6 @@ export async function migrateBase64Wardrobe(): Promise<void> {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-Id': getUserId(),
         },
         body: JSON.stringify({
           image: item.imageUrl,

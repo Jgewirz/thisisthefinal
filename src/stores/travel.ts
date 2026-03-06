@@ -1,13 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { getUserId } from '../lib/session';
 
 // ── API helpers (fire-and-forget for writes, awaited for reads) ────────
 
 function apiHeaders() {
   return {
     'Content-Type': 'application/json',
-    'X-User-Id': getUserId(),
   };
 }
 
@@ -108,6 +106,8 @@ const defaultProfile: TravelProfile = {
   preferredAirlines: [],
   excludedAirlines: [],
 };
+
+let travelHydrationPromise: Promise<void> | null = null;
 
 export const useTravelStore = create<TravelStore>()(
   persist(
@@ -282,42 +282,50 @@ export const useTravelStore = create<TravelStore>()(
         })),
 
       hydrateFromDb: async () => {
-        try {
-          const headers = apiHeaders();
-          const [bookmarksRes, selectionsRes] = await Promise.all([
-            fetch('/api/travel/bookmarks', { headers }),
-            fetch('/api/travel/trip-selections', { headers }),
-          ]);
+        if (travelHydrationPromise) return travelHydrationPromise;
 
-          const dbBookmarks = bookmarksRes.ok ? (await bookmarksRes.json()).bookmarks || [] : [];
-          const dbSelections = selectionsRes.ok ? (await selectionsRes.json()).selections || [] : [];
+        travelHydrationPromise = (async () => {
+          try {
+            const headers = apiHeaders();
+            const [bookmarksRes, selectionsRes] = await Promise.all([
+              fetch('/api/travel/bookmarks', { headers }),
+              fetch('/api/travel/trip-selections', { headers }),
+            ]);
 
-          set((state) => {
-            // Merge DB data with localStorage — DB wins for bookmarks/selections
-            // since they're the durable store
-            const localBookmarkIds = new Set(state.profile.bookmarks.map((b) => b.label));
-            const mergedBookmarks = [
-              ...state.profile.bookmarks,
-              ...dbBookmarks.filter((b: any) => !localBookmarkIds.has(b.label)),
-            ];
+            const dbBookmarks = bookmarksRes.ok ? (await bookmarksRes.json()).bookmarks || [] : [];
+            const dbSelections = selectionsRes.ok ? (await selectionsRes.json()).selections || [] : [];
 
-            const localSelectionIds = new Set(state.profile.tripSelections.map((s) => s.label));
-            const mergedSelections = [
-              ...state.profile.tripSelections,
-              ...dbSelections.filter((s: any) => !localSelectionIds.has(s.label)),
-            ];
+            set((state) => {
+              // Merge DB data with localStorage — DB wins for bookmarks/selections
+              // since they're the durable store
+              const localBookmarkIds = new Set(state.profile.bookmarks.map((b) => b.label));
+              const mergedBookmarks = [
+                ...state.profile.bookmarks,
+                ...dbBookmarks.filter((b: any) => !localBookmarkIds.has(b.label)),
+              ];
 
-            return {
-              profile: {
-                ...state.profile,
-                bookmarks: mergedBookmarks,
-                tripSelections: mergedSelections,
-              },
-            };
-          });
-        } catch {
-          // DB unavailable — localStorage data is still valid
-        }
+              const localSelectionIds = new Set(state.profile.tripSelections.map((s) => s.label));
+              const mergedSelections = [
+                ...state.profile.tripSelections,
+                ...dbSelections.filter((s: any) => !localSelectionIds.has(s.label)),
+              ];
+
+              return {
+                profile: {
+                  ...state.profile,
+                  bookmarks: mergedBookmarks,
+                  tripSelections: mergedSelections,
+                },
+              };
+            });
+          } catch {
+            // DB unavailable — localStorage data is still valid
+          } finally {
+            travelHydrationPromise = null;
+          }
+        })();
+
+        return travelHydrationPromise;
       },
 
       resetProfile: () => set({ profile: { ...defaultProfile } }),
@@ -343,11 +351,3 @@ export const useTravelStore = create<TravelStore>()(
     }
   )
 );
-
-// Hydrate from DB on initial load
-if (typeof window !== 'undefined') {
-  // Small delay to ensure the store rehydrates from localStorage first
-  setTimeout(() => {
-    useTravelStore.getState().hydrateFromDb();
-  }, 1000);
-}

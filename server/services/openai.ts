@@ -261,8 +261,9 @@ Rules:
 - classType: normalize to one of: yoga, pilates, hiit, spinning, barre, boxing, strength, dance, stretch, meditation, cardio, bootcamp, crossfit, martial arts, swimming, climbing, cycling. If not specific, use "fitness"
 - cityName: extract city name if user mentions a location, otherwise omit
 - userLat/userLng: include the user's coordinates if available (from location rules below) for "near me" searches
-- Only return "studio_search" if the user mentions fitness classes, workouts, yoga, pilates, gym, studio, training, or similar fitness-related discovery
-- Return "none" for: general fitness advice, workout plans, nutrition questions, motivation, or anything not about finding gyms/studios/classes
+- Only return "studio_search" if the user is explicitly trying to discover a place, class, studio, or gym. Strong signals include phrases like "find", "search", "show me", "near me", "nearby", "where can I", "book", "available", or a direct request for classes/gyms/studios in a place or time window
+- Return "none" for: general fitness advice, workout plans, nutrition questions, motivation, technique questions, recovery questions, program design, exercise explanations, or any message that is fitness-related but not clearly asking to find a location/class
+- Do NOT treat a generic topic like "yoga", "pilates", "boxing", "strength training", or "workout" by itself as search intent unless the message also asks to find classes, gyms, studios, or nearby options
 - IMPORTANT: Do NOT extract intent for travel, fashion, or general lifestyle topics — those belong to other agents
 - For follow-up messages refining a previous search (e.g. "try pilates instead", "what about boxing"), look at conversation context to carry forward parameters${locationRules}`;
 

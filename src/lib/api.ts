@@ -4,7 +4,9 @@ import { useStyleStore, type StyleProfile } from '../stores/style';
 import { useTravelStore } from '../stores/travel';
 import { useFitnessStore } from '../stores/fitness';
 import { useLocationStore } from '../stores/location';
-import { getUserId } from './session';
+
+const CHAT_REQUEST_TIMEOUT_MS = 30000;
+const STREAM_IDLE_TIMEOUT_MS = 45000;
 
 /**
  * Convert store messages to the shape the API expects.
@@ -86,11 +88,117 @@ function buildFullLocation() {
   };
 }
 
+const FITNESS_DISCOVERY_TERMS = [
+  'yoga',
+  'pilates',
+  'hiit',
+  'spinning',
+  'spin',
+  'barre',
+  'boxing',
+  'strength',
+  'dance',
+  'stretch',
+  'meditation',
+  'cardio',
+  'bootcamp',
+  'crossfit',
+  'martial arts',
+  'swimming',
+  'climbing',
+  'cycling',
+  'gym',
+  'studio',
+  'class',
+  'classes',
+];
+
+const FITNESS_SEARCH_ACTIONS = [
+  'find',
+  'search',
+  'look for',
+  'show me',
+  'where can i',
+  'near me',
+  'nearby',
+  'around me',
+  'in my area',
+  'book',
+  'schedule',
+  'available',
+  'open',
+  'closest',
+  'recommend a gym',
+  'recommend a studio',
+];
+
+const FITNESS_SEARCH_REFINEMENTS = [
+  'what about',
+  'instead',
+  'try',
+  'more',
+  'another',
+  'other',
+  'beginner',
+  'advanced',
+  'morning',
+  'afternoon',
+  'evening',
+  'weekend',
+  'today',
+  'tomorrow',
+  'this week',
+  'next week',
+  'closer',
+  'downtown',
+  'cheap',
+  'cheaper',
+];
+
+const FITNESS_LOCATION_CUES = ['near me', 'nearby', 'around me', 'in my area'];
+const FITNESS_TIME_CUES = ['today', 'tomorrow', 'this week', 'next week', 'this weekend', 'weekend'];
+const FITNESS_VENUE_CUES = ['gym', 'studio', 'class', 'classes'];
+
+function shouldRunFitnessSearch(userText: string): boolean {
+  const normalized = userText.toLowerCase().trim();
+  if (!normalized) return false;
+
+  const hasDiscoveryAction = FITNESS_SEARCH_ACTIONS.some((term) => normalized.includes(term));
+  const hasDiscoveryTarget = FITNESS_DISCOVERY_TERMS.some((term) => normalized.includes(term));
+
+  if (hasDiscoveryAction && hasDiscoveryTarget) {
+    return true;
+  }
+
+  const hasLocationCue = FITNESS_LOCATION_CUES.some((term) => normalized.includes(term));
+  const hasTimeCue = FITNESS_TIME_CUES.some((term) => normalized.includes(term));
+  const hasVenueCue = FITNESS_VENUE_CUES.some((term) => normalized.includes(term));
+
+  const looksLikeSearchByLocation = hasDiscoveryTarget && hasVenueCue && (hasLocationCue || hasTimeCue);
+  if (looksLikeSearchByLocation) {
+    return true;
+  }
+
+  const recentFitnessSearches = useFitnessStore.getState().profile.recentSearches;
+  const isRefinement = FITNESS_SEARCH_REFINEMENTS.some((term) => normalized.includes(term));
+  return recentFitnessSearches.length > 0 && isRefinement;
+}
+
 /** Fetch with a timeout to prevent indefinite hangs */
 function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 20000): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeout));
+}
+
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('STREAM_IDLE_TIMEOUT')), timeoutMs);
+    reader.read().then(resolve, reject).finally(() => clearTimeout(timeout));
+  });
 }
 
 /** Read an SSE stream and push tokens into the store */
@@ -106,38 +214,52 @@ async function readStream(res: Response, agentId: AgentId) {
   const decoder = new TextDecoder();
   let buffer = '';
 
+  const processBuffer = (chunk: string) => {
+    const lines = chunk.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6));
+        if (data.token) {
+          store.appendToLastBot(agentId, data.token);
+        }
+        if (data.error) {
+          const friendly = data.error.includes('unsupported image')
+            ? 'That image format isn\'t supported. Please try a JPEG or PNG photo!'
+            : data.error.includes('Could not process')
+              ? 'I couldn\'t process that image. Could you try a different photo?'
+              : 'Sorry, something went wrong. Please try again!';
+          store.appendToLastBot(agentId, `\n\n${friendly}`);
+        }
+      } catch {
+        // Skip malformed SSE payloads.
+      }
+    }
+  };
+
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithIdleTimeout(reader, STREAM_IDLE_TIMEOUT_MS);
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (data.token) {
-            store.appendToLastBot(agentId, data.token);
-          }
-          if (data.error) {
-            // Show user-friendly message instead of raw API errors
-            const friendly = data.error.includes('unsupported image')
-              ? 'That image format isn\'t supported. Please try a JPEG or PNG photo!'
-              : data.error.includes('Could not process')
-                ? 'I couldn\'t process that image. Could you try a different photo?'
-                : 'Sorry, something went wrong. Please try again!';
-            store.appendToLastBot(agentId, `\n\n${friendly}`);
-          }
-        } catch {
-          // skip malformed JSON
-        }
-      }
+      processBuffer(buffer);
     }
-  } catch {
-    store.appendToLastBot(agentId, '\n\nConnection interrupted. Please try again!');
+    buffer += decoder.decode();
+    processBuffer(buffer + '\n');
+  } catch (err) {
+    const message = err instanceof Error && err.message === 'STREAM_IDLE_TIMEOUT'
+      ? '\n\nThe connection stalled. Please try again.'
+      : '\n\nConnection interrupted. Please try again!';
+    store.appendToLastBot(agentId, message);
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Reader may already be closed.
+    }
   }
 }
 
@@ -212,9 +334,9 @@ export async function sendMessage(
       travelPromise = runTravelSearch(text, agentId, recentContext);
     }
 
-    // If this is the fitness agent, run class search extraction in parallel
+    // If this is the fitness agent, only run discovery when the user explicitly asks to find places/classes
     let fitnessPromise: Promise<RichCard[] | null> | null = null;
-    if (effectiveAgent === 'fitness') {
+    if (effectiveAgent === 'fitness' && shouldRunFitnessSearch(text)) {
       store.setAnalyzing(agentId, true);
       const recentContext = apiMessages.slice(-6).map((m) => ({
         role: m.role as string,
@@ -224,11 +346,10 @@ export async function sendMessage(
     }
 
     // Stream the conversational response
-    const res = await fetch('/api/chat', {
+    const res = await fetchWithTimeout('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-User-Id': getUserId(),
       },
       body: JSON.stringify({
         agentId: effectiveAgent,
@@ -238,7 +359,7 @@ export async function sendMessage(
         fitnessProfile,
         userLocation: buildChatLocation(),
       }),
-    });
+    }, CHAT_REQUEST_TIMEOUT_MS);
 
     if (!res.ok) {
       throw new Error(`API error: ${res.status}`);
@@ -312,15 +433,19 @@ export async function sendMessage(
       }
     }
   } catch (err: any) {
+    const message = err?.name === 'AbortError'
+      ? 'The request timed out. Please try again!'
+      : err.message?.includes('API error')
+        ? 'Sorry, I had trouble connecting. Please try again!'
+        : `Something went wrong: ${err.message}`;
     store.appendToLastBot(
       agentId,
-      err.message?.includes('API error')
-        ? 'Sorry, I had trouble connecting. Please try again!'
-        : `Something went wrong: ${err.message}`
+      message
     );
   } finally {
     // Ensure streaming is always reset even if an error occurred before the first reset
     store.setStreaming(agentId, false);
+    await store.saveAgentHistory(agentId);
   }
 }
 
@@ -357,7 +482,6 @@ async function runStyleAnalysis(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-User-Id': getUserId(),
       },
       body: JSON.stringify({ image: imageBase64, type }),
     });
@@ -468,7 +592,6 @@ async function runTravelSearch(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-User-Id': getUserId(),
       },
       body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
     });
@@ -484,7 +607,6 @@ async function runTravelSearch(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-Id': getUserId(),
         },
         body: JSON.stringify(intent.params),
       });
@@ -523,7 +645,6 @@ async function runTravelSearch(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-Id': getUserId(),
         },
         body: JSON.stringify(intent.params),
       });
@@ -551,7 +672,6 @@ async function runTravelSearch(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-Id': getUserId(),
         },
         body: JSON.stringify(intent.params),
       });
@@ -580,7 +700,6 @@ async function runTravelSearch(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-Id': getUserId(),
         },
         body: JSON.stringify({ textQuery, latitude, longitude, radius, types, cityName }),
       });
@@ -644,7 +763,6 @@ async function runFitnessSearch(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-User-Id': getUserId(),
       },
       body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
     });
@@ -672,7 +790,6 @@ async function runFitnessSearch(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-Id': getUserId(),
         },
         body: JSON.stringify(searchParams),
       });
@@ -710,9 +827,7 @@ export async function fetchGoogleCalendarStatus(): Promise<{
   connected: boolean;
 }> {
   try {
-    const res = await fetch('/api/calendar/google/status', {
-      headers: { 'X-User-Id': getUserId() },
-    });
+    const res = await fetch('/api/calendar/google/status');
     if (!res.ok) return { configured: false, connected: false };
     return res.json();
   } catch {
@@ -722,9 +837,7 @@ export async function fetchGoogleCalendarStatus(): Promise<{
 
 export async function getGoogleAuthUrl(): Promise<string | null> {
   try {
-    const res = await fetch('/api/calendar/google/auth-url', {
-      headers: { 'X-User-Id': getUserId() },
-    });
+    const res = await fetch('/api/calendar/google/auth-url');
     if (!res.ok) return null;
     const { url } = await res.json();
     return url;
@@ -737,7 +850,6 @@ export async function disconnectGoogleCalendar(): Promise<boolean> {
   try {
     const res = await fetch('/api/calendar/google/disconnect', {
       method: 'DELETE',
-      headers: { 'X-User-Id': getUserId() },
     });
     return res.ok;
   } catch {

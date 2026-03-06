@@ -1,13 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { getUserId } from '../lib/session';
 
 // ── API helpers ───────────────────────────────────────────────────────
 
 function apiHeaders() {
   return {
     'Content-Type': 'application/json',
-    'X-User-Id': getUserId(),
   };
 }
 
@@ -99,6 +97,8 @@ const defaultProfile: FitnessProfile = {
   bookmarks: [],
   schedule: [],
 };
+
+let fitnessHydrationPromise: Promise<void> | null = null;
 
 export const useFitnessStore = create<FitnessStore>()(
   persist(
@@ -243,40 +243,48 @@ export const useFitnessStore = create<FitnessStore>()(
       },
 
       hydrateFromDb: async () => {
-        try {
-          const headers = apiHeaders();
-          const [bookmarksRes, scheduleRes] = await Promise.all([
-            fetch('/api/fitness/bookmarks', { headers }),
-            fetch('/api/fitness/schedule', { headers }),
-          ]);
+        if (fitnessHydrationPromise) return fitnessHydrationPromise;
 
-          const dbBookmarks = bookmarksRes.ok ? (await bookmarksRes.json()).bookmarks || [] : [];
-          const dbSchedule = scheduleRes.ok ? (await scheduleRes.json()).schedule || [] : [];
+        fitnessHydrationPromise = (async () => {
+          try {
+            const headers = apiHeaders();
+            const [bookmarksRes, scheduleRes] = await Promise.all([
+              fetch('/api/fitness/bookmarks', { headers }),
+              fetch('/api/fitness/schedule', { headers }),
+            ]);
 
-          set((state) => {
-            const localBookmarkLabels = new Set(state.profile.bookmarks.map((b) => b.label));
-            const mergedBookmarks = [
-              ...state.profile.bookmarks,
-              ...dbBookmarks.filter((b: any) => !localBookmarkLabels.has(b.label)),
-            ];
+            const dbBookmarks = bookmarksRes.ok ? (await bookmarksRes.json()).bookmarks || [] : [];
+            const dbSchedule = scheduleRes.ok ? (await scheduleRes.json()).schedule || [] : [];
 
-            const localScheduleLabels = new Set(state.profile.schedule.map((s) => s.label));
-            const mergedSchedule = [
-              ...state.profile.schedule,
-              ...dbSchedule.filter((s: any) => !localScheduleLabels.has(s.label)),
-            ];
+            set((state) => {
+              const localBookmarkLabels = new Set(state.profile.bookmarks.map((b) => b.label));
+              const mergedBookmarks = [
+                ...state.profile.bookmarks,
+                ...dbBookmarks.filter((b: any) => !localBookmarkLabels.has(b.label)),
+              ];
 
-            return {
-              profile: {
-                ...state.profile,
-                bookmarks: mergedBookmarks,
-                schedule: mergedSchedule,
-              },
-            };
-          });
-        } catch {
-          // DB unavailable — localStorage data is still valid
-        }
+              const localScheduleLabels = new Set(state.profile.schedule.map((s) => s.label));
+              const mergedSchedule = [
+                ...state.profile.schedule,
+                ...dbSchedule.filter((s: any) => !localScheduleLabels.has(s.label)),
+              ];
+
+              return {
+                profile: {
+                  ...state.profile,
+                  bookmarks: mergedBookmarks,
+                  schedule: mergedSchedule,
+                },
+              };
+            });
+          } catch {
+            // DB unavailable — localStorage data is still valid
+          } finally {
+            fitnessHydrationPromise = null;
+          }
+        })();
+
+        return fitnessHydrationPromise;
       },
 
       resetProfile: () => set({ profile: { ...defaultProfile } }),
@@ -301,10 +309,3 @@ export const useFitnessStore = create<FitnessStore>()(
     }
   )
 );
-
-// Hydrate from DB on initial load
-if (typeof window !== 'undefined') {
-  setTimeout(() => {
-    useFitnessStore.getState().hydrateFromDb();
-  }, 1000);
-}

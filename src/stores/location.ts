@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { getUserId } from '../lib/session';
 import { useTravelStore } from './travel';
 import { useFitnessStore } from './fitness';
 
@@ -26,9 +25,10 @@ interface LocationStore {
 function apiHeaders() {
   return {
     'Content-Type': 'application/json',
-    'X-User-Id': getUserId(),
   };
 }
+
+let locationHydrationPromise: Promise<void> | null = null;
 
 export const useLocationStore = create<LocationStore>()(
   persist(
@@ -111,36 +111,44 @@ export const useLocationStore = create<LocationStore>()(
       },
 
       hydrateFromDb: async () => {
-        try {
-          const res = await fetch('/api/location', {
-            headers: apiHeaders(),
-          });
-          if (!res.ok) return;
-          const { location: dbLocation } = await res.json();
-          if (!dbLocation) return;
+        if (locationHydrationPromise) return locationHydrationPromise;
 
-          const current = get().location;
-          // DB wins if newer or local is missing
-          if (!current || (dbLocation.updatedAt && (!current.updatedAt || dbLocation.updatedAt > current.updatedAt))) {
-            set({ location: dbLocation });
+        locationHydrationPromise = (async () => {
+          try {
+            const res = await fetch('/api/location', {
+              headers: apiHeaders(),
+            });
+            if (!res.ok) return;
+            const { location: dbLocation } = await res.json();
+            if (!dbLocation) return;
 
-            // Also sync to other stores
-            if (dbLocation.nearestAirport) {
-              useTravelStore.getState().setHomeAirport(dbLocation.nearestAirport);
+            const current = get().location;
+            // DB wins if newer or local is missing
+            if (!current || (dbLocation.updatedAt && (!current.updatedAt || dbLocation.updatedAt > current.updatedAt))) {
+              set({ location: dbLocation });
+
+              // Also sync to other stores
+              if (dbLocation.nearestAirport) {
+                useTravelStore.getState().setHomeAirport(dbLocation.nearestAirport);
+              }
+              if (dbLocation.lat != null && dbLocation.lng != null) {
+                useFitnessStore.getState().setHomeLocation({
+                  lat: dbLocation.lat,
+                  lng: dbLocation.lng,
+                  label: dbLocation.city && dbLocation.region
+                    ? `${dbLocation.city}, ${dbLocation.region}`
+                    : `${dbLocation.lat.toFixed(2)}, ${dbLocation.lng.toFixed(2)}`,
+                });
+              }
             }
-            if (dbLocation.lat != null && dbLocation.lng != null) {
-              useFitnessStore.getState().setHomeLocation({
-                lat: dbLocation.lat,
-                lng: dbLocation.lng,
-                label: dbLocation.city && dbLocation.region
-                  ? `${dbLocation.city}, ${dbLocation.region}`
-                  : `${dbLocation.lat.toFixed(2)}, ${dbLocation.lng.toFixed(2)}`,
-              });
-            }
+          } catch {
+            // Silent — DB hydration is best-effort
+          } finally {
+            locationHydrationPromise = null;
           }
-        } catch {
-          // Silent — DB hydration is best-effort
-        }
+        })();
+
+        return locationHydrationPromise;
       },
     }),
     {
@@ -149,10 +157,3 @@ export const useLocationStore = create<LocationStore>()(
     }
   )
 );
-
-// Hydrate from DB on initial load
-if (typeof window !== 'undefined') {
-  setTimeout(() => {
-    useLocationStore.getState().hydrateFromDb();
-  }, 1000);
-}

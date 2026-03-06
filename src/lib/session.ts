@@ -8,3 +8,17 @@ export function getUserId(): string {
   }
   return id;
 }
+
+export async function ensureSession(): Promise<void> {
+  const res = await fetch('/api/auth/session', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+
+  if (!res.ok) {
+    throw new Error('Failed to initialize authenticated session');
+  }
+}

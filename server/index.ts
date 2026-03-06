@@ -2,12 +2,55 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { runMigrations } from './db/migrate.js';
+import authRouter from './routes/auth.js';
 import chatRouter from './routes/chat.js';
 import styleRouter from './routes/style.js';
 import travelRouter from './routes/travel.js';
 import fitnessRouter from './routes/fitness.js';
 import locationRouter from './routes/location.js';
 import calendarRouter from './routes/calendar.js';
+import { readSessionUserId } from './services/auth.js';
+
+function validateServerConfig() {
+  const missingRequired = ['OPENAI_API_KEY'].filter((key) => !process.env[key]?.trim());
+  if (missingRequired.length > 0) {
+    throw new Error(`Missing required environment variables: ${missingRequired.join(', ')}`);
+  }
+
+  const optionalGroups = [
+    {
+      name: 'Amadeus travel search',
+      keys: ['AMADEUS_CLIENT_ID', 'AMADEUS_CLIENT_SECRET'],
+    },
+    {
+      name: 'Google Calendar integration',
+      keys: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_TOKEN_ENCRYPTION_KEY'],
+    },
+    {
+      name: 'Cloudinary wardrobe uploads',
+      keys: ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'],
+    },
+  ];
+
+  for (const group of optionalGroups) {
+    const configuredKeys = group.keys.filter((key) => process.env[key]?.trim());
+    if (configuredKeys.length > 0 && configuredKeys.length !== group.keys.length) {
+      const missing = group.keys.filter((key) => !process.env[key]?.trim());
+      console.warn(`[config] ${group.name} is partially configured. Missing: ${missing.join(', ')}`);
+    }
+  }
+
+  const encryptionKey = process.env.GOOGLE_TOKEN_ENCRYPTION_KEY?.trim();
+  if (encryptionKey && !/^[a-fA-F0-9]{64}$/.test(encryptionKey)) {
+    throw new Error('GOOGLE_TOKEN_ENCRYPTION_KEY must be a 64-character hex string');
+  }
+
+  if (!process.env.SESSION_SECRET?.trim()) {
+    console.warn('[config] SESSION_SECRET is not set. Falling back to OPENAI_API_KEY for session signing.');
+  }
+}
+
+validateServerConfig();
 
 // Initialize SQLite + run migrations before anything else
 runMigrations();
@@ -15,18 +58,30 @@ runMigrations();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: true }));
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '10mb' })); // large limit for base64 images
-
-// Extract userId from header (anonymous session)
-app.use((req, _res, next) => {
-  (req as any).userId = (req.headers['x-user-id'] as string) || 'anonymous';
-  next();
-});
 
 // Health check
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', agents: ['style', 'travel', 'fitness', 'lifestyle', 'calendar'] });
+});
+
+app.use('/api/auth', authRouter);
+
+app.use('/api', (req, res, next) => {
+  if (req.path === '/calendar/google/callback') {
+    next();
+    return;
+  }
+
+  const userId = readSessionUserId(req);
+  if (!userId) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+
+  (req as any).userId = userId;
+  next();
 });
 
 // Routes

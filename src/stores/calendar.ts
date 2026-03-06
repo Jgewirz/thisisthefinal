@@ -1,13 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { getUserId } from '../lib/session';
 
 // ── API helpers ───────────────────────────────────────────────────────
 
 function apiHeaders() {
   return {
     'Content-Type': 'application/json',
-    'X-User-Id': getUserId(),
   };
 }
 
@@ -63,6 +61,8 @@ interface CalendarStore {
 }
 
 const today = new Date().toISOString().slice(0, 10);
+
+let calendarHydrationPromise: Promise<void> | null = null;
 
 export const useCalendarStore = create<CalendarStore>()(
   persist(
@@ -211,26 +211,34 @@ export const useCalendarStore = create<CalendarStore>()(
       },
 
       hydrateFromDb: async () => {
-        const { selectedDate, fetchEvents, fetchGoogleStatus } = get();
-        const d = new Date(selectedDate);
-        const from = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
-        const to = new Date(d.getFullYear(), d.getMonth() + 1, 6).toISOString().slice(0, 10);
+        if (calendarHydrationPromise) return calendarHydrationPromise;
 
-        await Promise.all([
-          fetchEvents(from, to),
-          fetchGoogleStatus(),
-        ]);
+        calendarHydrationPromise = (async () => {
+          const { selectedDate, fetchEvents, fetchGoogleStatus } = get();
+          const d = new Date(selectedDate);
+          const from = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+          const to = new Date(d.getFullYear(), d.getMonth() + 1, 6).toISOString().slice(0, 10);
 
-        // Also hydrate tasks list
-        try {
-          const res = await fetch('/api/calendar/tasks', { headers: apiHeaders() });
-          if (res.ok) {
-            const { tasks } = await res.json();
-            set({ tasks });
+          await Promise.all([
+            fetchEvents(from, to),
+            fetchGoogleStatus(),
+          ]);
+
+          // Also hydrate tasks list
+          try {
+            const res = await fetch('/api/calendar/tasks', { headers: apiHeaders() });
+            if (res.ok) {
+              const { tasks } = await res.json();
+              set({ tasks });
+            }
+          } catch {
+            // Keep cached
+          } finally {
+            calendarHydrationPromise = null;
           }
-        } catch {
-          // Keep cached
-        }
+        })();
+
+        return calendarHydrationPromise;
       },
     }),
     {
@@ -253,10 +261,3 @@ export const useCalendarStore = create<CalendarStore>()(
     } as any
   )
 );
-
-// Hydrate from DB on initial load
-if (typeof window !== 'undefined') {
-  setTimeout(() => {
-    useCalendarStore.getState().hydrateFromDb();
-  }, 1000);
-}

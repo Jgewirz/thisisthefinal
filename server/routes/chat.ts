@@ -1,8 +1,129 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { streamChat, ChatMessage } from '../services/openai.js';
 import { getAgentConfig } from '../config/agents.js';
+import { getDb } from '../db/sqlite.js';
 
 const router = Router();
+const VALID_AGENT_IDS = new Set(['all', 'style', 'travel', 'fitness', 'lifestyle']);
+
+type StoredMessage = {
+  id: string;
+  type: 'user' | 'bot';
+  text: string;
+  timestamp: string;
+  agentId: string;
+  imageUrl?: string;
+  richCard?: { type: string; data: any };
+};
+
+function ensureUser(userId: string) {
+  const db = getDb();
+  db.prepare('INSERT OR IGNORE INTO users (id) VALUES (?)').run(userId);
+}
+
+function serializeMessageRow(row: any): StoredMessage {
+  return {
+    id: row.id,
+    type: row.message_type,
+    text: row.text,
+    timestamp: row.created_at,
+    agentId: row.agent_id,
+    imageUrl: row.image_url || undefined,
+    richCard: row.rich_card_type
+      ? {
+          type: row.rich_card_type,
+          data: JSON.parse(row.rich_card_data || 'null'),
+        }
+      : undefined,
+  };
+}
+
+router.get('/history', (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId as string;
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT id, agent_id, message_type, text, image_url, rich_card_type, rich_card_data, created_at
+       FROM chat_messages
+       WHERE user_id = ?
+       ORDER BY agent_id ASC, message_order ASC`
+    ).all(userId) as any[];
+
+    const history: Record<string, StoredMessage[]> = {
+      all: [],
+      style: [],
+      travel: [],
+      fitness: [],
+      lifestyle: [],
+    };
+
+    for (const row of rows) {
+      if (!history[row.agent_id]) {
+        history[row.agent_id] = [];
+      }
+      history[row.agent_id].push(serializeMessageRow(row));
+    }
+
+    res.json({ history });
+  } catch (err: any) {
+    console.error('Chat history load error:', err.message);
+    res.status(500).json({ error: 'Failed to load chat history' });
+  }
+});
+
+router.put('/history/:agentId', (req: Request, res: Response) => {
+  const { agentId } = req.params;
+  const { messages } = req.body as { messages?: StoredMessage[] };
+
+  if (!VALID_AGENT_IDS.has(agentId)) {
+    res.status(400).json({ error: 'Invalid agentId' });
+    return;
+  }
+
+  if (!Array.isArray(messages)) {
+    res.status(400).json({ error: 'messages must be an array' });
+    return;
+  }
+
+  try {
+    const userId = (req as any).userId as string;
+    ensureUser(userId);
+
+    const db = getDb();
+    const replaceHistory = db.transaction((historyMessages: StoredMessage[]) => {
+      db.prepare('DELETE FROM chat_messages WHERE user_id = ? AND agent_id = ?').run(userId, agentId);
+
+      const insert = db.prepare(
+        `INSERT INTO chat_messages
+          (id, user_id, agent_id, message_type, text, image_url, rich_card_type, rich_card_data, created_at, message_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+
+      historyMessages.forEach((message, index) => {
+        insert.run(
+          message.id || crypto.randomUUID(),
+          userId,
+          agentId,
+          message.type,
+          message.text || '',
+          message.imageUrl || null,
+          message.richCard?.type || null,
+          message.richCard ? JSON.stringify(message.richCard.data ?? null) : null,
+          message.timestamp || new Date().toISOString(),
+          index
+        );
+      });
+    });
+
+    const filteredMessages = messages.filter((message) => message && (message.text || message.imageUrl || message.richCard));
+    replaceHistory(filteredMessages);
+    res.json({ saved: true, count: filteredMessages.length });
+  } catch (err: any) {
+    console.error('Chat history save error:', err.message);
+    res.status(500).json({ error: 'Failed to save chat history' });
+  }
+});
 
 /**
  * Strip image_url content parts from messages for non-vision agents.

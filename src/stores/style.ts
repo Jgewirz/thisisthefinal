@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { getUserId } from '../lib/session';
 
 export interface StyleProfile {
   bodyType: string | null;
@@ -47,6 +46,7 @@ interface StyleStore {
   completeOnboarding: () => void;
   resetProfile: () => void;
   syncToServer: () => Promise<void>;
+  importWardrobeSnapshot: (items: WardrobeItem[]) => Promise<WardrobeItem[]>;
 }
 
 const defaultProfile: StyleProfile = {
@@ -92,7 +92,6 @@ export const useStyleStore = create<StyleStore>()(
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-User-Id': getUserId(),
             },
             body: JSON.stringify({
               image: base64,
@@ -120,14 +119,19 @@ export const useStyleStore = create<StyleStore>()(
 
       loadWardrobe: async () => {
         try {
-          const res = await fetch('/api/style/wardrobe', {
-            headers: { 'X-User-Id': getUserId() },
-          });
+          const res = await fetch('/api/style/wardrobe');
           if (!res.ok) return;
           const { items } = await res.json();
 
+          const localWardrobe = get().profile.wardrobeItems.filter((item) => !item.imageUrl.startsWith('data:'));
+          let nextItems = items;
+
+          if (items.length === 0 && localWardrobe.length > 0) {
+            nextItems = await get().importWardrobeSnapshot(localWardrobe);
+          }
+
           set((state) => ({
-            profile: { ...state.profile, wardrobeItems: items },
+            profile: { ...state.profile, wardrobeItems: nextItems },
             wardrobeLoaded: true,
           }));
         } catch {
@@ -135,11 +139,33 @@ export const useStyleStore = create<StyleStore>()(
         }
       },
 
+      importWardrobeSnapshot: async (items) => {
+        if (items.length === 0) return [];
+
+        try {
+          const res = await fetch('/api/style/wardrobe/import', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ items }),
+          });
+
+          if (!res.ok) {
+            return items;
+          }
+
+          const { items: imported } = await res.json();
+          return imported;
+        } catch {
+          return items;
+        }
+      },
+
       removeWardrobeItem: async (id: string) => {
         try {
           await fetch(`/api/style/wardrobe/${id}`, {
             method: 'DELETE',
-            headers: { 'X-User-Id': getUserId() },
           });
         } catch {
           // Continue with local removal even if server fails
@@ -179,7 +205,6 @@ export const useStyleStore = create<StyleStore>()(
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-User-Id': getUserId(),
             },
             body: JSON.stringify({ profile }),
           });
