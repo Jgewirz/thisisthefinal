@@ -270,8 +270,8 @@ export async function sendMessage(
           // Attach first card to the existing bot message
           store.setRichCardOnLastBot(agentId, cards[0]);
 
-          // Add remaining cards as separate bot messages (up to 3 total)
-          for (let i = 1; i < Math.min(cards.length, 3); i++) {
+          // Add remaining cards as separate bot messages
+          for (let i = 1; i < cards.length; i++) {
             const cardMsg: Message = {
               id: crypto.randomUUID(),
               type: 'bot',
@@ -295,7 +295,7 @@ export async function sendMessage(
         if (cards && cards.length > 0) {
           store.setRichCardOnLastBot(agentId, cards[0]);
 
-          for (let i = 1; i < Math.min(cards.length, 3); i++) {
+          for (let i = 1; i < cards.length; i++) {
             const cardMsg: Message = {
               id: crypto.randomUUID(),
               type: 'bot',
