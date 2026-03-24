@@ -84,10 +84,30 @@ export interface CheapestDateResult {
   rawPrice: number;
 }
 
+export interface RoomOffer {
+  roomType?: string;
+  bedType?: string;
+  roomDescription?: string;
+  boardType?: string;
+  cancellation?: {
+    type: 'FREE' | 'PARTIAL' | 'NON_REFUNDABLE';
+    deadline?: string;
+    fee?: string;
+  };
+  paymentType?: string;
+  pricePerNight: string;
+  totalPrice: string;
+  basePricePerNight?: string;
+  taxes?: string;
+  /** Raw per-night number for sorting/filtering on the frontend */
+  rawPerNight: number;
+}
+
 export interface HotelOffer {
   name: string;
   rating: number;
   address: string;
+  /** Cheapest per-night price across all room offers */
   pricePerNight: string;
   totalPrice: string;
   checkIn: string;
@@ -95,6 +115,7 @@ export interface HotelOffer {
   nights: number;
   amenities: string[];
   bookingUrl?: string;
+  // Featured (cheapest) room details — kept for backward compat
   roomType?: string;
   bedType?: string;
   roomDescription?: string;
@@ -108,6 +129,21 @@ export interface HotelOffer {
   basePricePerNight?: string;
   taxes?: string;
   cityCode?: string;
+  // All available room/rate options for this hotel
+  roomOffers?: RoomOffer[];
+  // Amadeus geo/identity fields
+  hotelId?: string;
+  latitude?: number;
+  longitude?: number;
+  chainCode?: string;
+  // Google Places enrichment fields
+  photoUrl?: string | null;
+  userRating?: number | null;
+  reviewCount?: number | null;
+  editorialSummary?: string | null;
+  googleMapsUrl?: string | null;
+  phone?: string | null;
+  website?: string | null;
 }
 
 export interface POI {
@@ -147,6 +183,10 @@ export interface HotelSearchParams {
   adults?: number;
   currency?: string;
   maxResults?: number;
+  priceMin?: number | null;
+  priceMax?: number | null;
+  ratings?: number[] | null;
+  boardType?: string | null;
 }
 
 export interface POISearchParams {
@@ -590,84 +630,138 @@ export async function searchHotels(params: HotelSearchParams): Promise<HotelOffe
   await throttle();
   const client = getClient();
 
-  // Step 1: Find hotels in the city
-  const hotelsResponse = await client.referenceData.locations.hotels.byCity.get({
+  // Step 1: Find hotels in the city — pass rating filter if available
+  const cityQuery: Record<string, any> = {
     cityCode: params.cityCode,
-  });
+  };
+  if (params.ratings?.length) {
+    cityQuery.ratings = params.ratings.join(',');
+  }
 
-  const hotelIds = (hotelsResponse.data || [])
-    .slice(0, params.maxResults || 3)
+  const hotelsResponse = await client.referenceData.locations.hotels.byCity.get(cityQuery);
+
+  // Fetch more candidates when we have price filters — we'll narrow down after pricing
+  const candidateCount = (params.priceMin || params.priceMax) ? 15 : (params.maxResults || 5);
+  const hotelCandidates = (hotelsResponse.data || []).slice(0, candidateCount);
+  const hotelIds = hotelCandidates
     .map((h: any) => h.hotelId)
     .filter(Boolean);
 
+  // Build a lookup of geo/identity data from Step 1 for later enrichment
+  const hotelMeta = new Map<string, { lat?: number; lng?: number; chainCode?: string }>();
+  for (const h of hotelCandidates) {
+    if (h.hotelId) {
+      hotelMeta.set(h.hotelId, {
+        lat: h.geoCode?.latitude ?? h.latitude,
+        lng: h.geoCode?.longitude ?? h.longitude,
+        chainCode: h.chainCode,
+      });
+    }
+  }
+
   if (hotelIds.length === 0) return [];
 
-  // Step 2: Get offers for those hotels
+  // Step 2: Get offers — pass price range to Amadeus if available
   await throttle();
-  const offersResponse = await client.shopping.hotelOffersSearch.get({
+  const offersQuery: Record<string, any> = {
     hotelIds: hotelIds.join(','),
     checkInDate: params.checkIn,
     checkOutDate: params.checkOut,
     adults: params.adults || 1,
     currency: params.currency || 'USD',
-  });
+  };
+  if (params.priceMin != null && params.priceMax != null) {
+    offersQuery.priceRange = `${params.priceMin}-${params.priceMax}`;
+  } else if (params.priceMax != null) {
+    offersQuery.priceRange = `0-${params.priceMax}`;
+  }
+  if (params.boardType) {
+    offersQuery.boardType = params.boardType;
+  }
+
+  const offersResponse = await client.shopping.hotelOffersSearch.get(offersQuery);
 
   const offers = offersResponse.data || [];
+  const nights = Math.max(1, Math.ceil(
+    (new Date(params.checkOut).getTime() - new Date(params.checkIn).getTime()) / (1000 * 60 * 60 * 24)
+  ));
 
-  return offers.map((hotel: any): HotelOffer => {
-    const offer = hotel.offers?.[0];
-    const price = offer?.price;
-    const totalNum = parseFloat(price?.total || '0');
-    const currency = price?.currency || 'USD';
-    const nights = Math.max(1, Math.ceil(
-      (new Date(params.checkOut).getTime() - new Date(params.checkIn).getTime()) / (1000 * 60 * 60 * 24)
-    ));
-
+  let mapped = offers.map((hotel: any): HotelOffer & { _rawPerNight: number } => {
+    const allOffers: any[] = hotel.offers || [];
     const hotelName = hotel.hotel?.name || 'Hotel';
 
-    // Room type and bed info
-    const roomEst = offer?.room?.typeEstimated;
-    const roomCategory = roomEst?.category
-      ? roomEst.category.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
-      : undefined;
-    const bedCount = roomEst?.beds || 1;
-    const bedKind = roomEst?.bedType
-      ? roomEst.bedType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
-      : undefined;
-    const bedType = bedKind ? `${bedCount} ${bedKind} Bed${bedCount > 1 ? 's' : ''}` : undefined;
+    // Parse every offer into a RoomOffer
+    const roomOffers: RoomOffer[] = allOffers.map((offer: any) => {
+      const price = offer?.price;
+      const totalNum = parseFloat(price?.total || '0');
+      const currency = price?.currency || 'USD';
 
-    // Room description
-    const roomDescription = offer?.room?.description?.text || undefined;
+      const roomEst = offer?.room?.typeEstimated;
+      const roomCategory = roomEst?.category
+        ? roomEst.category.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+        : undefined;
+      const bedCount = roomEst?.beds || 1;
+      const bedKind = roomEst?.bedType
+        ? roomEst.bedType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+        : undefined;
+      const bedType = bedKind ? `${bedCount} ${bedKind} Bed${bedCount > 1 ? 's' : ''}` : undefined;
+      const roomDescription = offer?.room?.description?.text || undefined;
 
-    // Board type
-    const rawBoard = offer?.boardType;
-    const boardType = rawBoard
-      ? rawBoard.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
-      : undefined;
+      const rawBoard = offer?.boardType;
+      const boardType = rawBoard
+        ? rawBoard.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+        : undefined;
 
-    // Cancellation policy
-    const rawCancel = offer?.policies?.cancellation;
-    let cancellation: HotelOffer['cancellation'] = undefined;
-    if (rawCancel) {
-      const cancelType = rawCancel.type === 'FULL_STAY' ? 'NON_REFUNDABLE' as const
-        : rawCancel.amount ? 'PARTIAL' as const
-        : 'FREE' as const;
-      cancellation = {
-        type: cancelType,
-        deadline: rawCancel.deadline || undefined,
-        fee: rawCancel.amount ? formatPrice(rawCancel.amount, currency) : undefined,
+      const rawCancel = offer?.policies?.cancellation;
+      let cancellation: RoomOffer['cancellation'] = undefined;
+      if (rawCancel) {
+        const cancelType = rawCancel.type === 'FULL_STAY' ? 'NON_REFUNDABLE' as const
+          : rawCancel.amount ? 'PARTIAL' as const
+          : 'FREE' as const;
+        cancellation = {
+          type: cancelType,
+          deadline: rawCancel.deadline || undefined,
+          fee: rawCancel.amount ? formatPrice(rawCancel.amount, currency) : undefined,
+        };
+      }
+
+      const paymentType = offer?.policies?.paymentType
+        ? offer.policies.paymentType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
+        : undefined;
+
+      const taxesArr = price?.taxes || [];
+      const taxTotal = taxesArr.reduce((sum: number, t: any) => sum + parseFloat(t.amount || '0'), 0);
+      const baseNum = totalNum - taxTotal;
+      const perNight = Math.round(totalNum / nights);
+
+      return {
+        roomType: roomCategory,
+        bedType,
+        roomDescription,
+        boardType,
+        cancellation,
+        paymentType,
+        pricePerNight: formatPrice(String(perNight), currency),
+        totalPrice: formatPrice(price?.total || '0', currency),
+        basePricePerNight: taxTotal > 0 ? formatPrice(String(Math.round(baseNum / nights)), currency) : undefined,
+        taxes: taxTotal > 0 ? formatPrice(String(Math.round(taxTotal)), currency) : undefined,
+        rawPerNight: perNight,
       };
-    }
+    });
 
-    // Payment type
-    const paymentType = offer?.policies?.paymentType
-      ? offer.policies.paymentType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
-      : undefined;
+    // Sort room offers by price and deduplicate by room type + price
+    roomOffers.sort((a, b) => a.rawPerNight - b.rawPerNight);
+    const seen = new Set<string>();
+    const uniqueOffers = roomOffers.filter((ro) => {
+      const key = `${ro.roomType || ''}|${ro.rawPerNight}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
-    // Tax breakdown
-    const taxesArr = price?.taxes || [];
-    const taxTotal = taxesArr.reduce((sum: number, t: any) => sum + parseFloat(t.amount || '0'), 0);
-    const baseNum = totalNum - taxTotal;
+    // The cheapest offer is the featured/headline offer
+    const cheapest = uniqueOffers[0] || roomOffers[0];
+    const cheapestPerNight = cheapest?.rawPerNight ?? 0;
 
     return {
       name: hotelName,
@@ -675,8 +769,8 @@ export async function searchHotels(params: HotelSearchParams): Promise<HotelOffe
       address: [hotel.hotel?.address?.lines?.[0], hotel.hotel?.address?.cityName]
         .filter(Boolean)
         .join(', ') || '',
-      pricePerNight: formatPrice(String(Math.round(totalNum / nights)), currency),
-      totalPrice: formatPrice(price?.total || '0', currency),
+      pricePerNight: cheapest?.pricePerNight || '$0',
+      totalPrice: cheapest?.totalPrice || '$0',
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       nights,
@@ -684,17 +778,49 @@ export async function searchHotels(params: HotelSearchParams): Promise<HotelOffe
         a.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())
       ),
       bookingUrl: buildHotelBookingUrl(hotelName, params.cityCode, params.checkIn, params.checkOut),
-      roomType: roomCategory,
-      bedType,
-      roomDescription,
-      boardType,
-      cancellation,
-      paymentType,
-      basePricePerNight: taxTotal > 0 ? formatPrice(String(Math.round(baseNum / nights)), currency) : undefined,
-      taxes: taxTotal > 0 ? formatPrice(String(Math.round(taxTotal)), currency) : undefined,
+      // Featured room details (cheapest offer)
+      roomType: cheapest?.roomType,
+      bedType: cheapest?.bedType,
+      roomDescription: cheapest?.roomDescription,
+      boardType: cheapest?.boardType,
+      cancellation: cheapest?.cancellation,
+      paymentType: cheapest?.paymentType,
+      basePricePerNight: cheapest?.basePricePerNight,
+      taxes: cheapest?.taxes,
       cityCode: params.cityCode,
+      // All room/rate options (up to 6 distinct options)
+      roomOffers: uniqueOffers.slice(0, 6),
+      // Amadeus identity/geo fields for enrichment
+      hotelId: hotel.hotel?.hotelId || undefined,
+      latitude: hotelMeta.get(hotel.hotel?.hotelId)?.lat ?? undefined,
+      longitude: hotelMeta.get(hotel.hotel?.hotelId)?.lng ?? undefined,
+      chainCode: hotelMeta.get(hotel.hotel?.hotelId)?.chainCode ?? undefined,
+      // Placeholders for Google Places enrichment (filled by hotel-enricher)
+      photoUrl: null,
+      userRating: null,
+      reviewCount: null,
+      editorialSummary: null,
+      googleMapsUrl: null,
+      phone: null,
+      website: null,
+      _rawPerNight: cheapestPerNight,
     };
   });
+
+  // Post-filter by per-night price as a safety net (Amadeus priceRange filters on total, not per-night)
+  if (params.priceMin != null) {
+    mapped = mapped.filter((h) => h._rawPerNight >= params.priceMin!);
+  }
+  if (params.priceMax != null) {
+    mapped = mapped.filter((h) => h._rawPerNight <= params.priceMax!);
+  }
+
+  // Sort by price ascending, then cap results
+  mapped.sort((a, b) => a._rawPerNight - b._rawPerNight);
+  const maxResults = params.maxResults || 5;
+
+  // Strip internal field before returning
+  return mapped.slice(0, maxResults).map(({ _rawPerNight, ...rest }) => rest);
 }
 
 // ── Points of Interest search ──────────────────────────────────────────

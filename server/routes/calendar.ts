@@ -3,8 +3,6 @@ import crypto from 'crypto';
 import { getDb } from '../db/sqlite.js';
 import {
   isGoogleCalendarConfigured,
-  getAuthUrl,
-  handleCallback,
   getConnectionStatus,
   fetchGoogleEvents,
   disconnectGoogle,
@@ -298,7 +296,31 @@ router.get('/events', async (req: Request, res: Response) => {
       }
     }
 
-    // 4. Google Calendar events (if connected)
+    // 4. Dining reservations
+    const reservations = db.prepare(
+      'SELECT * FROM reservations WHERE user_id = ? AND date >= ? AND date <= ? AND status != ?'
+    ).all(userId, from, to, 'cancelled') as any[];
+
+    for (const r of reservations) {
+      events.push({
+        id: `dining-${r.id}`,
+        title: `${r.restaurant_name} — ${r.party_size} guests`,
+        date: r.date,
+        time: r.time,
+        source: 'dining' as any,
+        color: '#F97316', // orange
+        data: {
+          reservationId: r.id,
+          restaurantName: r.restaurant_name,
+          partySize: r.party_size,
+          status: r.status,
+          phone: r.restaurant_phone,
+          address: r.restaurant_address,
+        },
+      });
+    }
+
+    // 5. Google Calendar events (if connected)
     if (isGoogleCalendarConfigured()) {
       try {
         const gcEvents = await fetchGoogleEvents(
@@ -351,47 +373,6 @@ router.get('/google/status', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Google status error:', err.message);
     res.status(500).json({ error: 'Failed to check Google status' });
-  }
-});
-
-// ── GET /api/calendar/google/auth-url — generate OAuth URL ────────────
-router.get('/google/auth-url', (req: Request, res: Response) => {
-  if (!isGoogleCalendarConfigured()) {
-    res.status(503).json({ error: 'Google Calendar not configured' });
-    return;
-  }
-
-  try {
-    const userId = (req as any).userId as string;
-    ensureUser(userId);
-    const url = getAuthUrl(userId);
-    res.json({ url });
-  } catch (err: any) {
-    console.error('Auth URL error:', err.message);
-    res.status(500).json({ error: 'Failed to generate auth URL' });
-  }
-});
-
-// ── GET /api/calendar/google/callback — handle OAuth redirect ─────────
-router.get('/google/callback', async (req: Request, res: Response) => {
-  const { code, state, error } = req.query as Record<string, string>;
-
-  if (error) {
-    res.redirect('/calendar?google=error');
-    return;
-  }
-
-  if (!code || !state) {
-    res.status(400).json({ error: 'Missing code or state' });
-    return;
-  }
-
-  try {
-    await handleCallback(code, state);
-    res.redirect('/calendar?google=connected');
-  } catch (err: any) {
-    console.error('Google callback error:', err.message);
-    res.redirect('/calendar?google=error');
   }
 });
 

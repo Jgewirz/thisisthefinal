@@ -23,8 +23,13 @@ function ensureUser(userId: string) {
 }
 
 function serializeMessageRow(row: any): StoredMessage {
+  // Strip the "agentId:" prefix we add on write to avoid cross-agent PK collisions
+  const rawId: string = row.id || '';
+  const colonIdx = rawId.indexOf(':');
+  const id = colonIdx > 0 ? rawId.slice(colonIdx + 1) : rawId;
+
   return {
-    id: row.id,
+    id,
     type: row.message_type,
     text: row.text,
     timestamp: row.created_at,
@@ -95,14 +100,17 @@ router.put('/history/:agentId', (req: Request, res: Response) => {
       db.prepare('DELETE FROM chat_messages WHERE user_id = ? AND agent_id = ?').run(userId, agentId);
 
       const insert = db.prepare(
-        `INSERT INTO chat_messages
+        `INSERT OR REPLACE INTO chat_messages
           (id, user_id, agent_id, message_type, text, image_url, rich_card_type, rich_card_data, created_at, message_order)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
 
       historyMessages.forEach((message, index) => {
+        // Scope the ID to this agent to avoid cross-agent PK collisions
+        // (e.g. "all" and "lifestyle" can share the same frontend message IDs)
+        const scopedId = `${agentId}:${message.id || crypto.randomUUID()}`;
         insert.run(
-          message.id || crypto.randomUUID(),
+          scopedId,
           userId,
           agentId,
           message.type,
@@ -166,13 +174,15 @@ function sanitizeError(message: string): string {
 
 // POST /api/chat — streaming SSE endpoint
 router.post('/', async (req: Request, res: Response) => {
-  const { agentId, messages, styleProfile, travelProfile, fitnessProfile, userLocation } = req.body as {
+  const { agentId, messages, styleProfile, travelProfile, fitnessProfile, userLocation, lifestyleProfile, crossAgentContext } = req.body as {
     agentId: string;
     messages: ChatMessage[];
     styleProfile?: object;
     travelProfile?: object;
     fitnessProfile?: object;
     userLocation?: object;
+    lifestyleProfile?: object;
+    crossAgentContext?: object;
   };
 
   if (!agentId || !messages?.length) {
@@ -192,7 +202,7 @@ router.post('/', async (req: Request, res: Response) => {
   });
 
   try {
-    for await (const token of streamChat(agentId, cleanMessages, styleProfile, travelProfile, fitnessProfile, userLocation)) {
+    for await (const token of streamChat(agentId, cleanMessages, styleProfile, travelProfile, fitnessProfile, userLocation, lifestyleProfile, crossAgentContext)) {
       res.write(`data: ${JSON.stringify({ token })}\n\n`);
     }
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);

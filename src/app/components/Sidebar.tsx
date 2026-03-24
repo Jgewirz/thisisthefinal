@@ -1,6 +1,8 @@
 import { Link, useLocation } from 'react-router';
-import { Grid3x3, Palette, Plane, Dumbbell, Coffee, CalendarDays, Settings, User } from 'lucide-react';
+import { Grid3x3, Palette, Plane, Dumbbell, Coffee, Bookmark, CalendarDays, Settings, User, LogOut, LogIn } from 'lucide-react';
 import { navItems } from '../types';
+import { useUserStore } from '../../stores/user';
+import { loginWithGoogle } from '../../lib/session';
 
 const iconMap: Record<string, React.ComponentType<any>> = {
   Grid3x3,
@@ -8,11 +10,14 @@ const iconMap: Record<string, React.ComponentType<any>> = {
   Plane,
   Dumbbell,
   Coffee,
+  Bookmark,
   CalendarDays,
 };
 
 export function Sidebar() {
   const location = useLocation();
+  const user = useUserStore((s) => s.user);
+  const logout = useUserStore((s) => s.logout);
 
   const getActiveId = (path: string): string => {
     if (path === '/') return 'all';
@@ -20,6 +25,7 @@ export function Sidebar() {
   };
 
   const activeId = getActiveId(location.pathname);
+  const isGoogleUser = user?.provider === 'google';
 
   return (
     <div
@@ -104,22 +110,69 @@ export function Sidebar() {
           </span>
         </button>
 
-        <button
-          className="relative flex items-center h-12 w-full lg:mx-2 lg:rounded-lg transition-colors hover:bg-opacity-50"
-          style={{ backgroundColor: 'transparent' }}
-        >
-          <div className="w-14 flex items-center justify-center">
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center"
-              style={{ backgroundColor: 'var(--bg-surface-elevated)' }}
-            >
-              <User size={18} style={{ color: 'var(--text-secondary)' }} />
+        {/* User Profile / Auth */}
+        {isGoogleUser ? (
+          <div className="relative flex items-center h-12 w-full lg:mx-2 lg:rounded-lg group">
+            {/* Avatar + Name */}
+            <div className="w-14 flex items-center justify-center">
+              {user.avatarUrl ? (
+                <img
+                  src={user.avatarUrl}
+                  alt=""
+                  className="w-8 h-8 rounded-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold"
+                  style={{ backgroundColor: 'var(--accent-global)', color: 'var(--bg-primary)' }}
+                >
+                  {(user.displayName || user.email || '?')[0].toUpperCase()}
+                </div>
+              )}
             </div>
+            <div className="hidden lg:flex flex-1 items-center justify-between pr-2 min-w-0">
+              <span
+                className="font-medium truncate"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {user.displayName || user.email || 'User'}
+              </span>
+              <button
+                onClick={logout}
+                className="ml-2 p-1 rounded-md transition-colors hover:bg-white/10"
+                title="Sign out"
+              >
+                <LogOut size={16} style={{ color: 'var(--text-secondary)' }} />
+              </button>
+            </div>
+
+            {/* Mobile: tap avatar to logout */}
+            <button
+              onClick={logout}
+              className="absolute inset-0 lg:hidden"
+              aria-label="Sign out"
+            />
           </div>
-          <span className="hidden lg:block font-medium" style={{ color: 'var(--text-secondary)' }}>
-            Profile
-          </span>
-        </button>
+        ) : (
+          <button
+            onClick={() => loginWithGoogle()}
+            className="relative flex items-center h-12 w-full lg:mx-2 lg:rounded-lg transition-colors hover:bg-white/5"
+            style={{ backgroundColor: 'transparent' }}
+          >
+            <div className="w-14 flex items-center justify-center">
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center"
+                style={{ backgroundColor: 'var(--bg-surface-elevated)' }}
+              >
+                <LogIn size={18} style={{ color: 'var(--text-secondary)' }} />
+              </div>
+            </div>
+            <span className="hidden lg:block font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Sign in
+            </span>
+          </button>
+        )}
       </div>
     </div>
   );

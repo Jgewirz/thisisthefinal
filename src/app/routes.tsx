@@ -1,6 +1,7 @@
 import { createBrowserRouter } from "react-router";
 import { Root } from "./components/Root";
 import { ChatView } from "./components/ChatView";
+import { SavedFlightsView } from "./components/SavedFlightsView";
 import { CalendarView } from "./components/CalendarView";
 
 export const router = createBrowserRouter([
@@ -27,6 +28,10 @@ export const router = createBrowserRouter([
       {
         path: "lifestyle",
         Component: () => <ChatView agentId="lifestyle" />
+      },
+      {
+        path: "saved",
+        Component: SavedFlightsView,
       },
       {
         path: "calendar",

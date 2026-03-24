@@ -3,12 +3,15 @@ import express from 'express';
 import cors from 'cors';
 import { runMigrations } from './db/migrate.js';
 import authRouter from './routes/auth.js';
+import googleAuthRouter from './routes/google-auth.js';
 import chatRouter from './routes/chat.js';
 import styleRouter from './routes/style.js';
 import travelRouter from './routes/travel.js';
 import fitnessRouter from './routes/fitness.js';
 import locationRouter from './routes/location.js';
 import calendarRouter from './routes/calendar.js';
+import diningRouter from './routes/dining.js';
+import lifestyleRouter from './routes/lifestyle.js';
 import { readSessionUserId } from './services/auth.js';
 
 function validateServerConfig() {
@@ -67,13 +70,9 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/auth', authRouter);
+app.use('/api/auth', googleAuthRouter);
 
 app.use('/api', (req, res, next) => {
-  if (req.path === '/calendar/google/callback') {
-    next();
-    return;
-  }
-
   const userId = readSessionUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'Authentication required' });
@@ -91,6 +90,8 @@ app.use('/api/travel', travelRouter);
 app.use('/api/fitness', fitnessRouter);
 app.use('/api/location', locationRouter);
 app.use('/api/calendar', calendarRouter);
+app.use('/api/dining', diningRouter);
+app.use('/api/lifestyle', lifestyleRouter);
 
 // Global error handler — prevents raw stack traces from leaking to the client
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

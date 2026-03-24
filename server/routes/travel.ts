@@ -13,7 +13,11 @@ import {
   fetchPlacePhoto,
   isGooglePlacesConfigured,
 } from '../services/google-places.js';
+import { enrichHotelsWithPlaces } from '../services/hotel-enricher.js';
+import { createCalendarEvent } from '../services/google-calendar.js';
 import { getDb } from '../db/sqlite.js';
+
+const BOOKING_AGENT_URL = process.env.BOOKING_AGENT_URL || 'http://localhost:8000';
 
 const router = Router();
 
@@ -25,10 +29,11 @@ function ensureUser(userId: string) {
 
 // ── POST /api/travel/extract — GPT extracts structured params ──────────
 router.post('/extract', async (req: Request, res: Response) => {
-  const { message, context, userLocation } = req.body as {
+  const { message, context, userLocation, lastSearchIntent } = req.body as {
     message: string;
     context?: Array<{ role: string; content: string }>;
     userLocation?: object;
+    lastSearchIntent?: { type: string; params: Record<string, any> };
   };
 
   if (!message) {
@@ -37,7 +42,8 @@ router.post('/extract', async (req: Request, res: Response) => {
   }
 
   try {
-    const intent = await extractTravelParams(message, context, userLocation as any);
+    const intent = await extractTravelParams(message, context, userLocation as any, lastSearchIntent);
+    console.log('[Travel Extract]', message, '→', JSON.stringify(intent));
     res.json({ intent });
   } catch (err: any) {
     console.error('Travel extraction error:', err.message);
@@ -134,14 +140,9 @@ router.post('/cheapest-dates', async (req: Request, res: Response) => {
   }
 });
 
-// ── POST /api/travel/hotels — Amadeus hotel search ─────────────────────
+// ── POST /api/travel/hotels — Amadeus + Google Places hybrid hotel search ──
 router.post('/hotels', async (req: Request, res: Response) => {
-  if (!isAmadeusConfigured()) {
-    res.status(503).json({ error: 'Amadeus API not configured' });
-    return;
-  }
-
-  const { cityCode, checkIn, checkOut, adults, currency } = req.body;
+  const { cityCode, checkIn, checkOut, adults, currency, priceMin, priceMax, ratings, boardType } = req.body;
 
   if (!cityCode || !checkIn || !checkOut) {
     res.status(400).json({ error: 'cityCode, checkIn, and checkOut are required' });
@@ -152,7 +153,99 @@ router.post('/hotels', async (req: Request, res: Response) => {
     const userId = (req as any).userId as string;
     ensureUser(userId);
 
-    const results = await searchHotels({ cityCode, checkIn, checkOut, adults, currency });
+    // Resolve a human-readable city name for Google Places enrichment
+    const cityName = req.body.cityName || cityCode;
+
+    let results: any[] = [];
+    let searchStrategy = 'none';
+
+    // ── Strategy 1: Full Amadeus search with all filters ──
+    if (isAmadeusConfigured()) {
+      results = await searchHotels({
+        cityCode,
+        checkIn,
+        checkOut,
+        adults,
+        currency,
+        priceMin: priceMin ?? undefined,
+        priceMax: priceMax ?? undefined,
+        ratings: Array.isArray(ratings) ? ratings : undefined,
+        boardType: boardType ?? undefined,
+      });
+      searchStrategy = 'amadeus_filtered';
+
+      // ── Strategy 2: Relax price filters if results are thin ──
+      if (results.length < 3 && (priceMin != null || priceMax != null)) {
+        const relaxedResults = await searchHotels({
+          cityCode,
+          checkIn,
+          checkOut,
+          adults,
+          currency,
+          ratings: Array.isArray(ratings) ? ratings : undefined,
+          boardType: boardType ?? undefined,
+        });
+        // Merge: original filtered results first, then relaxed results that aren't duplicates
+        const existingNames = new Set(results.map((r) => r.name));
+        const additional = relaxedResults.filter((r: any) => !existingNames.has(r.name));
+        results = [...results, ...additional].slice(0, 8);
+        if (additional.length > 0) searchStrategy = 'amadeus_relaxed_price';
+      }
+
+      // ── Strategy 3: Relax star rating filters if still thin ──
+      if (results.length < 3 && ratings?.length) {
+        const noRatingResults = await searchHotels({
+          cityCode,
+          checkIn,
+          checkOut,
+          adults,
+          currency,
+          priceMin: priceMin ?? undefined,
+          priceMax: priceMax ?? undefined,
+        });
+        const existingNames = new Set(results.map((r) => r.name));
+        const additional = noRatingResults.filter((r: any) => !existingNames.has(r.name));
+        results = [...results, ...additional].slice(0, 8);
+        if (additional.length > 0) searchStrategy = 'amadeus_relaxed_rating';
+      }
+    }
+
+    // ── Strategy 4: Google Places fallback if Amadeus unavailable or empty ──
+    if (results.length === 0 && isGooglePlacesConfigured()) {
+      const priceHint = priceMax ? (priceMax <= 150 ? 'budget' : priceMax <= 300 ? '' : 'luxury') : '';
+      const ratingHint = ratings?.includes(5) ? '5-star' : ratings?.includes(4) ? 'upscale' : '';
+      const query = `${ratingHint} ${priceHint} hotels in ${cityName}`.replace(/\s+/g, ' ').trim();
+
+      const places = await searchPlaces({ textQuery: query });
+      results = places.map((p) => ({
+        name: p.name,
+        rating: Math.round(p.rating || 0),
+        address: p.address,
+        pricePerNight: p.priceLevel || 'Check rates',
+        totalPrice: '',
+        checkIn,
+        checkOut,
+        nights: Math.max(1, Math.ceil(
+          (new Date(checkOut).getTime() - new Date(checkIn).getTime()) / (1000 * 60 * 60 * 24)
+        )),
+        amenities: p.types || [],
+        bookingUrl: p.googleMapsUrl || undefined,
+        photoUrl: p.photoUrl,
+        userRating: p.rating,
+        reviewCount: p.reviewCount,
+        editorialSummary: p.editorialSummary,
+        googleMapsUrl: p.googleMapsUrl,
+        phone: p.phone,
+        website: p.website,
+        cityCode,
+      }));
+      searchStrategy = 'google_places_fallback';
+    }
+
+    // ── Enrich Amadeus results with Google Places data (photos, reviews, etc.) ──
+    if (searchStrategy.startsWith('amadeus') && results.length > 0) {
+      results = await enrichHotelsWithPlaces(results, cityName);
+    }
 
     const db = getDb();
     db.prepare(
@@ -161,11 +254,11 @@ router.post('/hotels', async (req: Request, res: Response) => {
       crypto.randomUUID(),
       userId,
       'hotel_search',
-      JSON.stringify({ cityCode, checkIn, checkOut, adults }),
+      JSON.stringify({ cityCode, checkIn, checkOut, adults, priceMin, priceMax, ratings, boardType, searchStrategy }),
       results.length
     );
 
-    res.json({ results });
+    res.json({ results, searchStrategy });
   } catch (err: any) {
     console.error('Hotel search error:', err.message);
     res.status(500).json({ error: 'Hotel search failed' });
@@ -450,6 +543,153 @@ router.delete('/trip-selections', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Clear trip selections error:', err.message);
     res.status(500).json({ error: 'Failed to clear trip selections' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// FLIGHT BOOKING — browser-use agent proxy
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── POST /api/travel/book — trigger a booking via the Python agent ────
+router.post('/book', async (req: Request, res: Response) => {
+  const { flightData, passengerInfo } = req.body;
+
+  if (!flightData || !passengerInfo?.firstName || !passengerInfo?.lastName || !passengerInfo?.email) {
+    res.status(400).json({ error: 'flightData and passengerInfo (firstName, lastName, email) are required' });
+    return;
+  }
+
+  try {
+    const userId = (req as any).userId as string;
+    ensureUser(userId);
+
+    const agentRes = await fetch(`${BOOKING_AGENT_URL}/book`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ flightData, passengerInfo }),
+    });
+
+    if (!agentRes.ok) {
+      const err = await agentRes.json().catch(() => ({}));
+      res.status(502).json({ error: 'Booking agent error', detail: err });
+      return;
+    }
+
+    const { jobId, status } = await agentRes.json() as { jobId: string; status: string };
+
+    // Store in DB
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO flight_bookings (id, user_id, job_id, flight_data, passenger_info, status)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(id, userId, jobId, JSON.stringify(flightData), JSON.stringify(passengerInfo), status);
+
+    res.json({ jobId, status });
+  } catch (err: any) {
+    console.error('Flight booking error:', err.message);
+    res.status(500).json({ error: 'Failed to start flight booking' });
+  }
+});
+
+// ── GET /api/travel/book/:jobId/status — poll booking status ──────────
+router.get('/book/:jobId/status', async (req: Request, res: Response) => {
+  const { jobId } = req.params;
+
+  try {
+    const agentRes = await fetch(`${BOOKING_AGENT_URL}/status/${jobId}`);
+    if (!agentRes.ok) {
+      res.status(agentRes.status).json({ error: 'Job not found' });
+      return;
+    }
+
+    const data = await agentRes.json();
+
+    // Update local DB with latest status
+    const db = getDb();
+    const userId = (req as any).userId as string;
+    db.prepare(
+      `UPDATE flight_bookings SET status = ?, updated_at = datetime('now') WHERE job_id = ? AND user_id = ?`
+    ).run(data.status, jobId, userId);
+
+    if (data.status === 'failed' && data.error) {
+      db.prepare(
+        `UPDATE flight_bookings SET error_message = ? WHERE job_id = ? AND user_id = ?`
+      ).run(data.error, jobId, userId);
+    }
+
+    res.json(data);
+  } catch (err: any) {
+    console.error('Booking status error:', err.message);
+    res.status(502).json({ error: 'Cannot reach booking agent' });
+  }
+});
+
+// ── POST /api/travel/book/:jobId/calendar — create a calendar event ───
+router.post('/book/:jobId/calendar', async (req: Request, res: Response) => {
+  const { jobId } = req.params;
+
+  try {
+    const userId = (req as any).userId as string;
+    const db = getDb();
+
+    const booking = db.prepare(
+      'SELECT id, flight_data, status FROM flight_bookings WHERE job_id = ? AND user_id = ?'
+    ).get(jobId, userId) as any;
+
+    if (!booking) {
+      res.status(404).json({ error: 'Booking not found' });
+      return;
+    }
+
+    if (booking.status !== 'completed' && booking.status !== 'queued') {
+      // Allow calendar creation for any non-failed booking
+    }
+
+    const flight = JSON.parse(booking.flight_data);
+    const depDate = flight.departureDate || new Date().toISOString().slice(0, 10);
+    const depTime = flight.departure?.time || '00:00';
+    const arrTime = flight.arrival?.time || depTime;
+
+    // Build ISO datetimes
+    const startDateTime = `${depDate}T${depTime}:00`;
+    // If arrival is next day (overnight), add a day
+    const endDate = flight.isOvernight
+      ? new Date(new Date(depDate).getTime() + 86400000).toISOString().slice(0, 10)
+      : depDate;
+    const endDateTime = `${endDate}T${arrTime}:00`;
+
+    const summary = `Flight ${flight.flightNumber || flight.airline || ''} — ${flight.departure?.city || ''} → ${flight.arrival?.city || ''}`;
+    const description = [
+      `Airline: ${flight.airline || 'N/A'}`,
+      `Flight: ${flight.flightNumber || 'N/A'}`,
+      `Route: ${flight.departure?.city || ''} → ${flight.arrival?.city || ''}`,
+      `Duration: ${flight.duration || 'N/A'}`,
+      `Price: ${flight.price || 'N/A'}`,
+      flight.bookingUrl ? `Booking: ${flight.bookingUrl}` : '',
+    ].filter(Boolean).join('\n');
+
+    const result = await createCalendarEvent(userId, {
+      summary,
+      description,
+      startDateTime,
+      endDateTime,
+      location: flight.departure?.city,
+    });
+
+    if (!result) {
+      res.status(400).json({ error: 'Google Calendar not connected' });
+      return;
+    }
+
+    db.prepare(
+      'UPDATE flight_bookings SET calendar_event_id = ? WHERE job_id = ? AND user_id = ?'
+    ).run(result.eventId, jobId, userId);
+
+    res.json({ eventId: result.eventId });
+  } catch (err: any) {
+    console.error('Calendar event error:', err.message);
+    res.status(500).json({ error: 'Failed to create calendar event' });
   }
 });
 

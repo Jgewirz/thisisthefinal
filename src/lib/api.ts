@@ -4,6 +4,7 @@ import { useStyleStore, type StyleProfile } from '../stores/style';
 import { useTravelStore } from '../stores/travel';
 import { useFitnessStore } from '../stores/fitness';
 import { useLocationStore } from '../stores/location';
+import { useLifestyleStore } from '../stores/lifestyle';
 
 const CHAT_REQUEST_TIMEOUT_MS = 30000;
 const STREAM_IDLE_TIMEOUT_MS = 45000;
@@ -130,6 +131,8 @@ const FITNESS_SEARCH_ACTIONS = [
   'closest',
   'recommend a gym',
   'recommend a studio',
+  'sign me up',
+  'reserve',
 ];
 
 const FITNESS_SEARCH_REFINEMENTS = [
@@ -187,23 +190,67 @@ const PLACE_DISCOVERY_TERMS = [
 ];
 const PLACE_SEARCH_ACTIONS = ['find', 'search', 'show me', 'recommend', 'where can i', 'what are', 'best'];
 
+// ── Lifestyle search heuristics ──────────────────────────────────────
+
+const LIFESTYLE_DISCOVERY_TERMS = [
+  'restaurant', 'restaurants', 'cafe', 'coffee', 'brunch', 'dinner', 'lunch',
+  'dessert', 'bakery', 'bar', 'bars', 'breakfast', 'latte', 'espresso',
+  'cocktail', 'cocktails', 'pizza', 'sushi', 'ramen', 'tacos', 'thai',
+  'italian', 'mexican', 'chinese', 'french', 'japanese', 'korean', 'indian',
+  'mediterranean', 'vegan', 'vegetarian', 'seafood', 'steak', 'bbq',
+  'ice cream', 'pastry', 'diner', 'bistro', 'pub', 'wine bar',
+  'food', 'eat', 'eating', 'dining', 'hungry', 'cuisine',
+];
+
+const LIFESTYLE_SEARCH_ACTIONS = [
+  'find', 'search', 'show me', 'recommend', 'where', 'best', 'good',
+  'near me', 'nearby', 'around me', 'in my area', 'close to me',
+  'book', 'reserve', 'reservation', 'book a table',
+];
+
+const LIFESTYLE_RESERVATION_PHRASES = [
+  'book', 'reserve', 'reservation', 'table for', 'book a table',
+  'make a reservation', 'get a table',
+];
+
+function shouldRunLifestyleSearch(userText: string): boolean {
+  const normalized = userText.toLowerCase().trim();
+  if (!normalized) return false;
+
+  // Reservation intent
+  const hasReservationPhrase = LIFESTYLE_RESERVATION_PHRASES.some((t) => normalized.includes(t));
+  if (hasReservationPhrase) return true;
+
+  const hasDiscoveryTerm = LIFESTYLE_DISCOVERY_TERMS.some((t) => normalized.includes(t));
+  const hasSearchAction = LIFESTYLE_SEARCH_ACTIONS.some((t) => normalized.includes(t));
+
+  // A discovery term alone is enough — GPT extraction will determine if it's actually a search.
+  // This prevents messages like "Italian restaurants" or "sushi" from being silently ignored.
+  return hasDiscoveryTerm || hasSearchAction;
+}
+
+const FITNESS_BOOKING_PHRASES = [
+  'book the', 'book that', 'sign me up', 'i want to go', 'reserve',
+  'book it', 'book this', 'yes book', 'yeah book', 'let\'s book',
+  'go ahead and book', 'confirm', 'i\'ll take',
+];
+
 function shouldRunFitnessSearch(userText: string): boolean {
   const normalized = userText.toLowerCase().trim();
   if (!normalized) return false;
 
-  const hasDiscoveryAction = FITNESS_SEARCH_ACTIONS.some((term) => normalized.includes(term));
-  const hasDiscoveryTarget = FITNESS_DISCOVERY_TERMS.some((term) => normalized.includes(term));
-
-  if (hasDiscoveryAction && hasDiscoveryTarget) {
+  // Booking intent — user wants to book a class from recent results
+  const hasBookingPhrase = FITNESS_BOOKING_PHRASES.some((term) => normalized.includes(term));
+  if (hasBookingPhrase && useFitnessStore.getState().profile.lastSearchResults.length > 0) {
     return true;
   }
 
-  const hasLocationCue = FITNESS_LOCATION_CUES.some((term) => normalized.includes(term));
-  const hasTimeCue = FITNESS_TIME_CUES.some((term) => normalized.includes(term));
-  const hasVenueCue = FITNESS_VENUE_CUES.some((term) => normalized.includes(term));
+  const hasDiscoveryAction = FITNESS_SEARCH_ACTIONS.some((term) => normalized.includes(term));
+  const hasDiscoveryTarget = FITNESS_DISCOVERY_TERMS.some((term) => normalized.includes(term));
 
-  const looksLikeSearchByLocation = hasDiscoveryTarget && hasVenueCue && (hasLocationCue || hasTimeCue);
-  if (looksLikeSearchByLocation) {
+  // A discovery target alone is enough (e.g. "yoga", "pilates near me").
+  // GPT extraction will return "none" if it's not actually a search request.
+  if (hasDiscoveryTarget || hasDiscoveryAction) {
     return true;
   }
 
@@ -384,6 +431,10 @@ export async function sendMessage(
       effectiveAgent === 'travel' ? buildTravelProfile(useTravelStore.getState().profile) : undefined;
     const fitnessProfile =
       effectiveAgent === 'fitness' ? buildFitnessProfile(useFitnessStore.getState().profile) : undefined;
+    const lifestyleProfile =
+      effectiveAgent === 'lifestyle' ? buildLifestyleProfile(useLifestyleStore.getState().profile) : undefined;
+    const crossAgentContext =
+      effectiveAgent === 'lifestyle' ? buildCrossAgentContext() : undefined;
 
     const allMessages = store.getMessages(agentId);
     // Exclude the empty bot placeholder, limit to last 20 messages to prevent token overflow
@@ -421,14 +472,25 @@ export async function sendMessage(
       fitnessPromise = runFitnessSearch(text, agentId, recentContext);
     }
 
-    let sharedPlacePromise: Promise<RichCard[] | null> | null = null;
-    if (effectiveAgent === 'lifestyle' && shouldRunSharedPlaceSearch(text)) {
-      store.setAnalyzing(agentId, true);
-      const recentContext = apiMessages.slice(-6).map((m) => ({
-        role: m.role as string,
-        content: typeof m.content === 'string' ? m.content : '',
-      }));
-      sharedPlacePromise = runSharedPlaceSearch(text, recentContext);
+    // Lifestyle agent: use dedicated lifestyle search pipeline (restaurants, cafes, reservations)
+    // Falls back to shared place search for generic POI queries
+    let lifestylePromise: Promise<RichCard[] | null> | null = null;
+    if (effectiveAgent === 'lifestyle') {
+      if (shouldRunLifestyleSearch(text)) {
+        store.setAnalyzing(agentId, true);
+        const recentContext = apiMessages.slice(-6).map((m) => ({
+          role: m.role as string,
+          content: typeof m.content === 'string' ? m.content : '',
+        }));
+        lifestylePromise = runLifestyleSearch(text, agentId, recentContext);
+      } else if (shouldRunSharedPlaceSearch(text)) {
+        store.setAnalyzing(agentId, true);
+        const recentContext = apiMessages.slice(-6).map((m) => ({
+          role: m.role as string,
+          content: typeof m.content === 'string' ? m.content : '',
+        }));
+        lifestylePromise = runSharedPlaceSearch(text, recentContext);
+      }
     }
 
     // Stream the conversational response
@@ -443,6 +505,8 @@ export async function sendMessage(
         styleProfile,
         travelProfile,
         fitnessProfile,
+        lifestyleProfile,
+        crossAgentContext,
         userLocation: buildChatLocation(),
       }),
     }, CHAT_REQUEST_TIMEOUT_MS);
@@ -493,9 +557,9 @@ export async function sendMessage(
       }
     }
 
-    if (sharedPlacePromise) {
+    if (lifestylePromise) {
       try {
-        const cards = await sharedPlacePromise;
+        const cards = await lifestylePromise;
         if (cards && cards.length > 0) {
           appendRichCards(agentId, cards);
         }
@@ -518,6 +582,64 @@ export async function sendMessage(
     store.setStreaming(agentId, false);
     await store.saveAgentHistory(agentId);
   }
+}
+
+// ── Flight Booking API ──────────────────────────────────────────────────
+
+export async function startFlightBooking(
+  flightData: any,
+  passengerInfo: { firstName: string; lastName: string; email: string; phone?: string }
+): Promise<{ jobId: string }> {
+  const res = await fetch('/api/travel/book', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flightData, passengerInfo }),
+  });
+  if (!res.ok) throw new Error('Failed to start booking');
+  return res.json();
+}
+
+export function streamBookingStatus(
+  jobId: string,
+  onStatus: (data: any) => void
+): { stop: () => void } {
+  let active = true;
+  const interval = setInterval(async () => {
+    if (!active) return;
+    try {
+      const res = await fetch(`/api/travel/book/${jobId}/status`);
+      if (!res.ok) return;
+      const data = await res.json();
+      onStatus(data);
+      if (data.status === 'completed' || data.status === 'failed') {
+        clearInterval(interval);
+      }
+    } catch {
+      // Retry silently
+    }
+  }, 2000);
+
+  // Auto-stop after 2 minutes
+  setTimeout(() => {
+    active = false;
+    clearInterval(interval);
+  }, 120000);
+
+  return {
+    stop: () => {
+      active = false;
+      clearInterval(interval);
+    },
+  };
+}
+
+export async function addBookingToCalendar(jobId: string): Promise<{ eventId: string }> {
+  const res = await fetch(`/api/travel/book/${jobId}/calendar`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) throw new Error('Failed to add to calendar');
+  return res.json();
 }
 
 /**
@@ -557,7 +679,10 @@ async function runStyleAnalysis(
       body: JSON.stringify({ image: imageBase64, type }),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn('[style] /api/style/analyze returned', res.status);
+      return null;
+    }
     const { result } = await res.json();
 
     if (type === 'skin_tone' && result?.season && result?.bestColors) {
@@ -616,8 +741,10 @@ async function runStyleAnalysis(
       };
     }
 
+    console.warn('[style] Analysis returned unexpected result shape:', result);
     return null;
-  } catch {
+  } catch (err) {
+    console.warn('[style] runStyleAnalysis failed:', err);
     return null;
   }
 }
@@ -660,19 +787,28 @@ async function runTravelSearch(
   try {
     await ensureLocationForSearchQuery(userText);
 
+    // Include the last successful search intent so GPT can carry forward params for follow-ups
+    const lastSearchIntent = useTravelStore.getState().profile.lastSearchIntent || undefined;
+
     // Step 1: Extract structured intent from user text (with conversation context for follow-ups)
     const extractRes = await fetchWithTimeout('/api/travel/extract', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
+      body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation(), lastSearchIntent }),
     });
 
-    if (!extractRes.ok) return null;
+    if (!extractRes.ok) {
+      console.warn('[travel] /api/travel/extract returned', extractRes.status);
+      return null;
+    }
     const { intent } = await extractRes.json();
 
-    if (!intent || intent.type === 'none') return null;
+    if (!intent || intent.type === 'none') {
+      console.info('[travel] Intent extraction returned "none" for:', userText.slice(0, 80));
+      return null;
+    }
 
     // Step 2: Call the appropriate search endpoint
     if (intent.type === 'cheapest_dates') {
@@ -694,6 +830,7 @@ async function runTravelSearch(
         params: intent.params,
         label: `Cheapest dates: ${intent.params.origin} → ${intent.params.destination}`,
       });
+      useTravelStore.getState().setLastSearchIntent(intent);
 
       return [{
         type: 'cheapestDates',
@@ -706,6 +843,13 @@ async function runTravelSearch(
       if (intent.params.maxPrice) {
         useTravelStore.getState().setMaxPricePreference(intent.params.maxPrice);
       }
+      // Learn preferred airlines when user explicitly requests them
+      if (intent.params.includedAirlineCodes?.length) {
+        const store = useTravelStore.getState();
+        for (const code of intent.params.includedAirlineCodes) {
+          store.addPreferredAirline(code);
+        }
+      }
       // Learn excluded airlines
       if (intent.params.excludedAirlineCodes?.length) {
         const store = useTravelStore.getState();
@@ -714,18 +858,47 @@ async function runTravelSearch(
         }
       }
 
+      // Merge stored airline preferences when GPT didn't extract explicit ones
+      const profile = useTravelStore.getState().profile;
+      const flightParams = { ...intent.params };
+      if (!flightParams.includedAirlineCodes?.length && profile.preferredAirlines?.length) {
+        flightParams.includedAirlineCodes = profile.preferredAirlines;
+      }
+      if (!flightParams.excludedAirlineCodes?.length && profile.excludedAirlines?.length) {
+        flightParams.excludedAirlineCodes = profile.excludedAirlines;
+      }
+
       const res = await fetchWithTimeout('/api/travel/flights', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(intent.params),
+        body: JSON.stringify(flightParams),
       });
 
-      if (!res.ok) return null;
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        console.warn('[travel] /api/travel/flights returned', res.status, errBody.slice(0, 200));
+        return null;
+      }
       const { results } = await res.json();
 
-      if (!results?.length) return null;
+      if (!results?.length) {
+        // Tell the user no results were found with details about what was searched
+        const airlineNote = flightParams.includedAirlineCodes?.length
+          ? ` on ${flightParams.includedAirlineCodes.join(', ')}`
+          : '';
+        const store = useChatStore.getState();
+        const noResultMsg: Message = {
+          id: crypto.randomUUID(),
+          type: 'bot',
+          text: `I couldn't find any flights${airlineNote} from ${flightParams.origin} to ${flightParams.destination} on ${flightParams.departureDate}. Try broadening your search — different dates, removing the airline filter, or checking nearby airports.`,
+          timestamp: new Date(),
+          agentId: 'travel' as AgentId,
+        };
+        store.addMessage('travel' as AgentId, noResultMsg);
+        return null;
+      }
 
       // Log to recent searches
       useTravelStore.getState().addRecentSearch({
@@ -733,6 +906,10 @@ async function runTravelSearch(
         params: intent.params,
         label: `${intent.params.origin} → ${intent.params.destination}`,
       });
+      useTravelStore.getState().setLastSearchIntent(intent);
+
+      // Cross-agent signal: travel destination
+      emitLifestyleSignal('travel_destination', intent.params.destination);
 
       return results.map((flight: any): RichCard => ({
         type: 'flight',
@@ -741,24 +918,52 @@ async function runTravelSearch(
     }
 
     if (intent.type === 'hotel_search') {
+      const hotelParams = { ...intent.params };
+
       const res = await fetchWithTimeout('/api/travel/hotels', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(intent.params),
+        body: JSON.stringify(hotelParams),
       });
 
-      if (!res.ok) return null;
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        console.warn('[travel] /api/travel/hotels returned', res.status, errBody.slice(0, 200));
+        return null;
+      }
       const { results } = await res.json();
 
-      if (!results?.length) return null;
+      if (!results?.length) {
+        const store = useChatStore.getState();
+        const noResultMsg: Message = {
+          id: crypto.randomUUID(),
+          type: 'bot',
+          text: `I couldn't find any hotels in ${hotelParams.cityName || hotelParams.cityCode} for those dates. Try adjusting your dates, budget, or star rating filters.`,
+          timestamp: new Date(),
+          agentId: 'travel' as AgentId,
+        };
+        store.addMessage('travel' as AgentId, noResultMsg);
+        return null;
+      }
+
+      // Build a descriptive search label
+      const pricePart = hotelParams.priceMin && hotelParams.priceMax
+        ? ` $${hotelParams.priceMin}-$${hotelParams.priceMax}/night`
+        : hotelParams.priceMax
+          ? ` under $${hotelParams.priceMax}/night`
+          : '';
+      const ratingPart = hotelParams.ratings?.length
+        ? ` ${hotelParams.ratings.join('-')}★`
+        : '';
 
       useTravelStore.getState().addRecentSearch({
         type: 'hotel_search',
-        params: intent.params,
-        label: `Hotels in ${intent.params.cityCode}`,
+        params: hotelParams,
+        label: `Hotels in ${hotelParams.cityCode}${ratingPart}${pricePart}`,
       });
+      useTravelStore.getState().setLastSearchIntent(intent);
 
       return results.map((hotel: any): RichCard => ({
         type: 'hotel',
@@ -787,15 +992,22 @@ async function runTravelSearch(
         params: intent.params,
         label: textQuery || `Things to do in ${cityName || 'area'}`,
       });
+      useTravelStore.getState().setLastSearchIntent(intent);
+
+      // Use restaurant card for restaurant/dining searches
+      const isRestaurantSearch = (types || []).some((t: string) =>
+        ['restaurant', 'cafe', 'bar', 'meal_delivery', 'meal_takeaway'].includes(t)
+      ) || /restaurant|dining|eat|food|brunch|lunch|dinner|sushi|pizza|thai|indian|mexican|italian|chinese|french|japanese|korean/i.test(textQuery || '');
 
       return results.map((poi: any): RichCard => ({
-        type: 'place',
+        type: isRestaurantSearch ? 'restaurant' : 'place',
         data: poi,
       }));
     }
 
     return null;
-  } catch {
+  } catch (err) {
+    console.warn('[travel] runTravelSearch failed:', err);
     return null;
   }
 }
@@ -839,9 +1051,173 @@ async function runSharedPlaceSearch(
       type: 'place',
       data: poi,
     }));
-  } catch {
+  } catch (err) {
+    console.warn('[travel] runSharedPlaceSearch failed:', err);
     return null;
   }
+}
+
+/**
+ * Run lifestyle search (restaurants, cafes, reservations) in parallel with chat.
+ * Only fires for the lifestyle agent.
+ */
+async function runLifestyleSearch(
+  userText: string,
+  agentId: AgentId,
+  context?: Array<{ role: string; content: string }>
+): Promise<RichCard[] | null> {
+  try {
+    await ensureLocationForSearchQuery(userText);
+
+    // Step 1: Extract structured intent
+    const extractRes = await fetchWithTimeout('/api/lifestyle/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
+    });
+
+    if (!extractRes.ok) {
+      console.warn('[lifestyle] /api/lifestyle/extract returned', extractRes.status);
+      return null;
+    }
+    const { intent } = await extractRes.json();
+
+    if (!intent || intent.type === 'none' || intent.type === 'recommendation') {
+      console.info('[lifestyle] Intent extraction returned', intent?.type || 'null', 'for:', userText.slice(0, 80));
+      return null;
+    }
+
+    // Step 2: Restaurant or coffee search
+    if (intent.type === 'restaurant_search' || intent.type === 'coffee_search') {
+      const searchParams = {
+        textQuery: intent.params.textQuery,
+        latitude: intent.params.latitude,
+        longitude: intent.params.longitude,
+        radius: intent.params.radius,
+        types: intent.params.types || (intent.type === 'coffee_search' ? ['cafe'] : ['restaurant']),
+        cuisine: intent.params.cuisine,
+        cityName: intent.params.cityName,
+      };
+
+      const res = await fetchWithTimeout('/api/lifestyle/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(searchParams),
+      });
+
+      if (!res.ok) return null;
+      const { results } = await res.json();
+
+      if (!results?.length) return null;
+
+      // Fire-and-forget observation signal
+      const signalKey = intent.params.cuisine || (intent.type === 'coffee_search' ? 'coffee' : 'dining');
+      emitLifestyleSignal(intent.type === 'coffee_search' ? 'coffee' : 'cuisine', signalKey);
+
+      // Store last search results in lifestyle store
+      useLifestyleStore.getState().setLastSearchResults(results);
+      useLifestyleStore.getState().addRecentSearch({
+        type: intent.type,
+        params: intent.params,
+        label: intent.params.textQuery || `${intent.params.cuisine || ''} ${intent.type === 'coffee_search' ? 'cafes' : 'restaurants'}`.trim(),
+      });
+
+      return results.map((place: any): RichCard => ({
+        type: 'restaurant',
+        data: place,
+      }));
+    }
+
+    // Step 3: Reservation — find the place first if needed, then book
+    if (intent.type === 'reservation') {
+      const { restaurantName, date, time, partySize } = intent.params;
+
+      if (!restaurantName) return null;
+
+      // Search for the restaurant to get its details
+      const searchRes = await fetchWithTimeout('/api/lifestyle/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          textQuery: restaurantName,
+          latitude: intent.params.latitude || buildFullLocation()?.lat,
+          longitude: intent.params.longitude || buildFullLocation()?.lng,
+          types: ['restaurant'],
+        }),
+      });
+
+      if (!searchRes.ok) return null;
+      const { results } = await searchRes.json();
+
+      if (!results?.length) return null;
+
+      const restaurant = results[0];
+
+      // If all required params present, make the reservation
+      if (date && time && partySize) {
+        try {
+          const reserveRes = await fetchWithTimeout('/api/dining/reserve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              restaurantName: restaurant.name || restaurantName,
+              restaurantPlaceId: restaurant.id,
+              restaurantEmail: restaurant.email || null,
+              restaurantPhone: restaurant.phone || null,
+              restaurantAddress: restaurant.address,
+              date,
+              time,
+              partySize,
+              specialRequests: intent.params.specialRequests || null,
+            }),
+          });
+
+          if (reserveRes.ok) {
+            const reservation = await reserveRes.json();
+            emitLifestyleSignal('reservation_made', restaurantName, intent.params.cuisine);
+
+            return [{
+              type: 'reservationConfirmation',
+              data: {
+                reservationId: reservation.id,
+                restaurantName: restaurant.name || restaurantName,
+                restaurantAddress: restaurant.address,
+                restaurantPhone: restaurant.phone,
+                restaurantGoogleMapsUrl: restaurant.googleMapsUrl,
+                date,
+                time,
+                partySize,
+                status: reservation.status || 'saved',
+                emailSent: reservation.emailSent || false,
+              },
+            }];
+          }
+        } catch {
+          // Reservation failed — show the restaurant card instead so user can use modal
+        }
+      }
+
+      // Missing params or reservation failed — show restaurant card, let GPT ask for details
+      return results.slice(0, 1).map((place: any): RichCard => ({
+        type: 'restaurant',
+        data: place,
+      }));
+    }
+
+    return null;
+  } catch (err) {
+    console.warn('[lifestyle] runLifestyleSearch failed:', err);
+    return null;
+  }
+}
+
+/** Fire-and-forget lifestyle observation signal */
+function emitLifestyleSignal(type: string, key: string, value?: string) {
+  fetch('/api/lifestyle/observe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, key, value }),
+  }).catch(() => {});
 }
 
 /**
@@ -886,10 +1262,16 @@ async function runFitnessSearch(
       body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation() }),
     });
 
-    if (!extractRes.ok) return null;
+    if (!extractRes.ok) {
+      console.warn('[fitness] /api/fitness/extract returned', extractRes.status);
+      return null;
+    }
     const { intent } = await extractRes.json();
 
-    if (!intent || intent.type === 'none') return null;
+    if (!intent || intent.type === 'none') {
+      console.info('[fitness] Intent extraction returned "none" for:', userText.slice(0, 80));
+      return null;
+    }
 
     // Step 2: Search for gyms/studios via Google Places
     if (intent.type === 'studio_search') {
@@ -925,16 +1307,183 @@ async function runFitnessSearch(
         label: `${intent.params.classType || 'Fitness'} studios${intent.params.cityName ? ` in ${intent.params.cityName}` : ' nearby'}`,
       });
 
-      return results.map((place: any): RichCard => ({
-        type: 'place',
-        data: place,
+      return results.map((studio: any): RichCard => ({
+        type: 'fitnessStudio',
+        data: studio,
       }));
     }
 
+    // Step 2b: Search for individual classes (flattened)
+    if (intent.type === 'class_search') {
+      if (intent.params.classType) {
+        useFitnessStore.getState().addPreferredClassType(intent.params.classType);
+      }
+
+      const location = useFitnessStore.getState().profile.homeLocation;
+      const searchParams = {
+        ...intent.params,
+        ...(location && !intent.params.userLat ? { userLat: location.lat, userLng: location.lng } : {}),
+      };
+
+      const res = await fetchWithTimeout('/api/fitness/classes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(searchParams),
+      });
+
+      if (!res.ok) return null;
+      const { results } = await res.json();
+
+      if (!results?.length) return null;
+
+      // Store results so book_class can reference them
+      useFitnessStore.getState().setLastSearchResults(results);
+
+      useFitnessStore.getState().addRecentSearch({
+        type: 'class_search',
+        params: intent.params,
+        label: `${intent.params.classType || 'Fitness'} classes${intent.params.timePreference ? ` (${intent.params.timePreference})` : ''}${intent.params.cityName ? ` in ${intent.params.cityName}` : ' nearby'}`,
+      });
+
+      // Cross-agent signal: fitness class preference
+      if (intent.params.classType) {
+        emitLifestyleSignal('fitness_class', intent.params.classType, intent.params.timePreference);
+      }
+
+      return results.map((cls: any): RichCard => ({
+        type: 'fitnessClass',
+        data: {
+          classId: cls.classId,
+          className: cls.className,
+          classDescription: '',
+          instructor: cls.instructor,
+          studioName: cls.studioName,
+          studioAddress: cls.studioAddress,
+          startDateTime: '',
+          date: cls.date,
+          time: cls.time,
+          duration: cls.duration,
+          spotsRemaining: cls.spotsRemaining,
+          maxCapacity: 0,
+          isAvailable: true,
+          isCanceled: false,
+          isWaitlistAvailable: false,
+          difficulty: cls.level || null,
+          category: cls.category,
+          bookingStatus: cls.spotsRemaining === 0 ? 'full' : 'available',
+          siteId: cls.mindbodySiteId || '',
+          studioLat: cls.studioLat,
+          studioLng: cls.studioLng,
+          distance: cls.distance || null,
+          // Extended fields for booking
+          bookingPlatform: cls.bookingPlatform,
+          bookingUrl: cls.bookingUrl,
+          mindbodySiteId: cls.mindbodySiteId,
+          mindbodyClassId: cls.mindbodyClassId,
+          studioWebsite: cls.studioWebsite,
+          studioGoogleMapsUrl: cls.studioGoogleMapsUrl,
+        },
+      }));
+    }
+
+    // Step 2c: Book a class from recent results
+    if (intent.type === 'book_class') {
+      const store = useFitnessStore.getState();
+      const lastResults = store.profile.lastSearchResults;
+
+      if (!lastResults?.length) return null;
+
+      // Match the class — by index, name, or time
+      let matchedClass = null;
+      const { classIndex, className, time, studioName } = intent.params;
+
+      if (classIndex != null && lastResults[classIndex]) {
+        matchedClass = lastResults[classIndex];
+      } else if (className || time) {
+        matchedClass = lastResults.find((c: any) => {
+          const nameMatch = !className || c.className?.toLowerCase().includes(className.toLowerCase());
+          const timeMatch = !time || c.time?.includes(time);
+          const studioMatch = !studioName || c.studioName?.toLowerCase().includes(studioName.toLowerCase());
+          return nameMatch && timeMatch && studioMatch;
+        });
+      }
+
+      if (!matchedClass) {
+        matchedClass = lastResults[0]; // Default to first result
+      }
+
+      const platform = matchedClass.bookingPlatform || 'manual';
+      const booking = await store.bookClass(matchedClass, platform);
+
+      if (!booking) return null;
+
+      return [{
+        type: 'bookingConfirmation',
+        data: {
+          bookingId: booking.id,
+          className: booking.className,
+          instructor: booking.instructor,
+          studioName: booking.studioName,
+          studioAddress: booking.studioAddress,
+          date: booking.date,
+          time: booking.time,
+          duration: booking.duration,
+          category: booking.category,
+          bookingPlatform: booking.bookingPlatform,
+          bookingStatus: booking.bookingStatus,
+          bookingUrl: booking.bookingUrl,
+          studioGoogleMapsUrl: matchedClass.studioGoogleMapsUrl,
+        },
+      }];
+    }
+
     return null;
-  } catch {
+  } catch (err) {
+    console.warn('[fitness] runFitnessSearch failed:', err);
     return null;
   }
+}
+
+/**
+ * Build a lean lifestyle profile for the chat system prompt.
+ */
+function buildLifestyleProfile(profile: import('../stores/lifestyle').LifestyleProfile) {
+  return {
+    preferredCuisines: profile.preferredCuisines || [],
+    coffeeDrinkPreferences: profile.coffeeDrinkPreferences || [],
+    preferredPriceLevels: profile.preferredPriceLevels || [],
+    favoriteRestaurants: (profile.favoriteRestaurants || []).slice(0, 5).map(({ name, cuisine }) => ({ name, cuisine })),
+    frequentLocations: (profile.frequentLocations || []).slice(0, 3),
+    activityPatterns: (profile.activityPatterns || []).slice(0, 3),
+    recentSearches: (profile.recentSearches || []).slice(0, 3).map(({ type, label }) => ({ type, label })),
+  };
+}
+
+/**
+ * Build cross-agent context snapshot for The Curator's system prompt.
+ * Pulls relevant data from other agent stores.
+ */
+function buildCrossAgentContext() {
+  const fitnessProfile = useFitnessStore.getState().profile;
+  const travelProfile = useTravelStore.getState().profile;
+  const lifestyleProfile = useLifestyleStore.getState().profile;
+
+  return {
+    upcomingFitnessClasses: (fitnessProfile.schedule || []).slice(0, 3).map(({ label, data }) => ({
+      label,
+      date: data.date,
+      time: data.time,
+      studioName: data.studioName,
+    })),
+    savedTravelDestinations: (travelProfile.bookmarks || []).slice(0, 3).map(({ type, label }) => ({ type, label })),
+    recentTravelSearches: (travelProfile.recentSearches || []).slice(0, 2).map(({ label }) => label),
+    recentDiningSearches: (lifestyleProfile.recentSearches || []).slice(0, 3).map(({ label }) => label),
+    favoriteRestaurants: (lifestyleProfile.favoriteRestaurants || []).slice(0, 3).map(({ name }) => name),
+    fitnessPreferences: {
+      classTypes: fitnessProfile.preferredClassTypes?.slice(0, 3) || [],
+      times: fitnessProfile.preferredTimes?.slice(0, 2) || [],
+    },
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -951,17 +1500,6 @@ export async function fetchGoogleCalendarStatus(): Promise<{
     return res.json();
   } catch {
     return { configured: false, connected: false };
-  }
-}
-
-export async function getGoogleAuthUrl(): Promise<string | null> {
-  try {
-    const res = await fetch('/api/calendar/google/auth-url');
-    if (!res.ok) return null;
-    const { url } = await res.json();
-    return url;
-  } catch {
-    return null;
   }
 }
 

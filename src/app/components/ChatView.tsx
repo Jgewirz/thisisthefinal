@@ -3,7 +3,12 @@ import { AgentId, agents, Message } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
 import { StyleProfilePanel } from './StyleProfilePanel';
+import { ReservationModal, type ReservationFormData } from './ReservationModal';
+import { FlightBookingFlow } from './FlightBookingFlow';
+import { FitnessClassBookingFlow } from './FitnessClassBookingFlow';
+import type { RestaurantCardData } from './cards/RestaurantCard';
 import { useChatStore } from '../../stores/chat';
+import { useFitnessStore } from '../../stores/fitness';
 import { useMemo, useRef, useEffect, useState } from 'react';
 import { sendMessage } from '../../lib/api';
 
@@ -16,6 +21,9 @@ export function ChatView({ agentId }: ChatViewProps) {
   const { messages, isStreaming, isAnalyzing } = useChatStore((s) => s.agents[agentId]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [reservationRestaurant, setReservationRestaurant] = useState<RestaurantCardData | null>(null);
+  const [bookingFlight, setBookingFlight] = useState<any>(null);
+  const [bookingFitnessClass, setBookingFitnessClass] = useState<any>(null);
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -58,6 +66,34 @@ export function ChatView({ agentId }: ChatViewProps) {
   const handleSend = (text: string, imageBase64?: string, analysisType?: string) => {
     if (isStreaming) return;
     sendMessage(agentId, text, imageBase64, analysisType);
+  };
+
+  const handleReserve = (restaurantData: RestaurantCardData) => {
+    setReservationRestaurant(restaurantData);
+  };
+
+  const handleReservationSubmit = async (formData: ReservationFormData) => {
+    try {
+      const res = await fetch('/api/dining/reserve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        // Add a confirmation message to the chat
+        useChatStore.getState().addMessage(agentId, {
+          id: crypto.randomUUID(),
+          type: 'bot',
+          text: result.message,
+          timestamp: new Date(),
+          agentId,
+        });
+      }
+    } catch (err) {
+      console.error('Reservation failed:', err);
+    }
   };
 
   return (
@@ -169,7 +205,14 @@ export function ChatView({ agentId }: ChatViewProps) {
                 {/* Messages */}
                 <div className="space-y-4">
                   {group.messages.map((message) => (
-                    <MessageBubble key={message.id} message={message} onAction={(text) => handleSend(text)} />
+                    <MessageBubble
+                      key={message.id}
+                      message={message}
+                      onAction={(text) => handleSend(text)}
+                      onReserve={handleReserve}
+                      onBookFlight={(flightData) => setBookingFlight(flightData)}
+                      onBookFitnessClass={(classData) => setBookingFitnessClass(classData)}
+                    />
                   ))}
                 </div>
               </div>
@@ -219,6 +262,92 @@ export function ChatView({ agentId }: ChatViewProps) {
       {/* Style Profile Panel */}
       {agentId === 'style' && (
         <StyleProfilePanel open={profileOpen} onClose={() => setProfileOpen(false)} />
+      )}
+
+      {/* Reservation Modal */}
+      <ReservationModal
+        open={!!reservationRestaurant}
+        restaurant={reservationRestaurant}
+        onClose={() => setReservationRestaurant(null)}
+        onSubmit={handleReservationSubmit}
+      />
+
+      {/* Flight Booking Flow */}
+      {bookingFlight && (
+        <FlightBookingFlow
+          flightData={bookingFlight}
+          onClose={() => setBookingFlight(null)}
+          onComplete={(result) => {
+            // Add confirmation card to chat
+            if (result) {
+              useChatStore.getState().addMessage(agentId, {
+                id: crypto.randomUUID(),
+                type: 'bot',
+                text: '',
+                timestamp: new Date(),
+                agentId,
+                richCard: {
+                  type: 'flightBookingConfirmation',
+                  data: {
+                    airline: bookingFlight.airline,
+                    flightNumber: bookingFlight.flightNumber,
+                    departure: bookingFlight.departure,
+                    arrival: bookingFlight.arrival,
+                    departureDate: bookingFlight.departureDate,
+                    price: bookingFlight.price,
+                    duration: bookingFlight.duration,
+                    stops: bookingFlight.stops,
+                    status: result.status || 'unknown',
+                    bookingUrl: bookingFlight.bookingUrl,
+                    calendarEventId: result.calendarEventId,
+                  },
+                },
+              });
+            }
+            setBookingFlight(null);
+          }}
+        />
+      )}
+
+      {/* Fitness Class Browser Booking Flow */}
+      {bookingFitnessClass && (
+        <FitnessClassBookingFlow
+          classData={bookingFitnessClass}
+          onClose={() => setBookingFitnessClass(null)}
+          onComplete={(result) => {
+            if (result?.status === 'booked' || result?.status === 'already_registered') {
+              useChatStore.getState().addMessage(agentId, {
+                id: crypto.randomUUID(),
+                type: 'bot',
+                text: '',
+                timestamp: new Date(),
+                agentId,
+                richCard: {
+                  type: 'bookingConfirmation',
+                  data: {
+                    bookingId: crypto.randomUUID(),
+                    className: bookingFitnessClass.className,
+                    instructor: bookingFitnessClass.instructor,
+                    studioName: bookingFitnessClass.studioName,
+                    studioAddress: bookingFitnessClass.studioAddress,
+                    date: bookingFitnessClass.date,
+                    time: bookingFitnessClass.time,
+                    duration: bookingFitnessClass.duration,
+                    category: bookingFitnessClass.category,
+                    bookingPlatform: 'website',
+                    bookingStatus: 'confirmed',
+                    bookingUrl: bookingFitnessClass.studioWebsite || bookingFitnessClass.bookingUrl,
+                    studioGoogleMapsUrl: bookingFitnessClass.studioGoogleMapsUrl,
+                  },
+                },
+              });
+
+              // Also update fitness store
+              useFitnessStore.getState().bookClass(bookingFitnessClass, 'website');
+            }
+            setBookingFitnessClass(null);
+          }}
+        />
       )}
     </div>
   );

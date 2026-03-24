@@ -1,26 +1,55 @@
 import { useEffect, useState } from 'react';
-import { Outlet } from 'react-router';
+import { Outlet, useSearchParams } from 'react-router';
 import { Sidebar } from './Sidebar';
 import { BottomTabBar } from './BottomTabBar';
+import { LoginScreen } from './LoginScreen';
 import { useStyleStore } from '../../stores/style';
 import { useTravelStore } from '../../stores/travel';
 import { useFitnessStore } from '../../stores/fitness';
 import { useLocationStore } from '../../stores/location';
 import { useCalendarStore } from '../../stores/calendar';
 import { useChatStore } from '../../stores/chat';
+import { useUserStore } from '../../stores/user';
 import { migrateBase64Wardrobe } from '../../lib/migration';
 import { ensureSession } from '../../lib/session';
 
+type BootState = 'loading' | 'login' | 'ready' | 'error';
+
 export function Root() {
-  const [bootState, setBootState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [bootState, setBootState] = useState<BootState>('loading');
+  const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
+        // Ensure anonymous session cookie exists
         await ensureSession();
 
+        // Fetch user profile (may be anonymous or Google-linked)
+        await useUserStore.getState().fetchUser();
+
+        const user = useUserStore.getState().user;
+
+        // If user has no Google account and hasn't opted to skip login, show login screen
+        // But if they came back from a login flow (URL has ?login=), skip the screen
+        const loginParam = searchParams.get('login');
+        if (loginParam) {
+          // Clean up the URL param
+          searchParams.delete('login');
+          setSearchParams(searchParams, { replace: true });
+        }
+
+        const hasChosenGuest = localStorage.getItem('girlbot-guest-mode') === 'true';
+        const isAuthenticated = user?.provider === 'google';
+
+        if (!isAuthenticated && !hasChosenGuest && !loginParam) {
+          if (!cancelled) setBootState('login');
+          return;
+        }
+
+        // Hydrate all stores
         await Promise.allSettled([
           useStyleStore.getState().syncToServer().then(() => useStyleStore.getState().loadWardrobe()).then(() => migrateBase64Wardrobe()),
           useTravelStore.getState().hydrateFromDb(),
@@ -30,20 +59,33 @@ export function Root() {
           useChatStore.getState().hydrateFromDb(),
         ]);
 
-        if (!cancelled) {
-          setBootState('ready');
-        }
+        if (!cancelled) setBootState('ready');
       } catch {
-        if (!cancelled) {
-          setBootState('error');
-        }
+        if (!cancelled) setBootState('error');
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
+
+  const handleContinueAsGuest = async () => {
+    localStorage.setItem('girlbot-guest-mode', 'true');
+    setBootState('loading');
+
+    try {
+      await Promise.allSettled([
+        useStyleStore.getState().syncToServer().then(() => useStyleStore.getState().loadWardrobe()).then(() => migrateBase64Wardrobe()),
+        useTravelStore.getState().hydrateFromDb(),
+        useFitnessStore.getState().hydrateFromDb(),
+        useLocationStore.getState().hydrateFromDb(),
+        useCalendarStore.getState().hydrateFromDb(),
+        useChatStore.getState().hydrateFromDb(),
+      ]);
+      setBootState('ready');
+    } catch {
+      setBootState('error');
+    }
+  };
 
   if (bootState === 'loading') {
     return (
@@ -53,6 +95,10 @@ export function Root() {
         </div>
       </div>
     );
+  }
+
+  if (bootState === 'login') {
+    return <LoginScreen onContinueAsGuest={handleContinueAsGuest} />;
   }
 
   if (bootState === 'error') {

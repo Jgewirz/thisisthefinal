@@ -63,9 +63,14 @@ export type RichCardType =
   | 'outfit'
   | 'colorSeason'
   | 'fitnessClass'
+  | 'fitnessStudio'
+  | 'restaurant'
   | 'reminder'
   | 'wardrobeItem'
-  | 'cheapestDates';
+  | 'cheapestDates'
+  | 'bookingConfirmation'
+  | 'flightBookingConfirmation'
+  | 'reservationConfirmation';
 
 export interface RichCard {
   type: RichCardType;
@@ -90,6 +95,13 @@ export const navItems: NavItem[] = [
     color: a.color,
     path: a.id === 'all' ? '/' : `/${a.id}`,
   })),
+  {
+    id: 'saved',
+    name: 'Saved',
+    icon: 'Bookmark',
+    color: 'var(--accent-travel)',
+    path: '/saved',
+  },
   {
     id: 'calendar',
     name: 'Calendar',

@@ -62,6 +62,24 @@ export interface RecentFitnessSearch {
   searchedAt: string;
 }
 
+export interface FitnessBooking {
+  id: string;
+  className: string;
+  instructor?: string;
+  studioName: string;
+  studioAddress?: string;
+  date: string;
+  time: string;
+  duration?: string;
+  category?: string;
+  bookingPlatform: 'mindbody' | 'website' | 'manual' | 'browser';
+  bookingStatus: 'confirmed' | 'cancelled' | 'pending';
+  bookingUrl?: string;
+  studioWebsite?: string;
+  studioGoogleMapsUrl?: string;
+  bookedAt: string;
+}
+
 export interface FitnessProfile {
   homeLocation: { lat: number; lng: number; label: string } | null;
   preferredClassTypes: string[];
@@ -70,6 +88,8 @@ export interface FitnessProfile {
   recentSearches: RecentFitnessSearch[];
   bookmarks: FitnessBookmark[];
   schedule: ScheduleItem[];
+  bookings: FitnessBooking[];
+  lastSearchResults: any[];
 }
 
 interface FitnessStore {
@@ -84,6 +104,9 @@ interface FitnessStore {
   addToSchedule: (item: Omit<ScheduleItem, 'id' | 'selectedAt'>) => void;
   removeFromSchedule: (id: string) => void;
   isScheduled: (label: string) => boolean;
+  setLastSearchResults: (results: any[]) => void;
+  bookClass: (classData: any, bookingPlatform: 'mindbody' | 'website' | 'manual' | 'browser') => Promise<FitnessBooking | null>;
+  cancelBooking: (id: string) => Promise<boolean>;
   hydrateFromDb: () => Promise<void>;
   resetProfile: () => void;
 }
@@ -96,6 +119,8 @@ const defaultProfile: FitnessProfile = {
   recentSearches: [],
   bookmarks: [],
   schedule: [],
+  bookings: [],
+  lastSearchResults: [],
 };
 
 let fitnessHydrationPromise: Promise<void> | null = null;
@@ -242,19 +267,102 @@ export const useFitnessStore = create<FitnessStore>()(
         return get().profile.schedule.some((s) => s.label === label);
       },
 
+      setLastSearchResults: (results) =>
+        set((state) => ({
+          profile: { ...state.profile, lastSearchResults: results },
+        })),
+
+      bookClass: async (classData, bookingPlatform) => {
+        try {
+          const res = await fetch('/api/fitness/book', {
+            method: 'POST',
+            headers: apiHeaders(),
+            body: JSON.stringify({ classData, bookingPlatform }),
+          });
+
+          if (!res.ok) {
+            console.warn('Fitness book failed:', res.status);
+            return null;
+          }
+
+          const result = await res.json();
+          const booking: FitnessBooking = {
+            id: result.id,
+            className: result.className || classData.className,
+            instructor: classData.instructor,
+            studioName: result.studioName || classData.studioName,
+            studioAddress: classData.studioAddress,
+            date: result.date || classData.date,
+            time: result.time || classData.time,
+            duration: classData.duration,
+            category: classData.category,
+            bookingPlatform: result.bookingPlatform || bookingPlatform,
+            bookingStatus: result.status || 'confirmed',
+            bookingUrl: result.bookingUrl,
+            studioWebsite: classData.studioWebsite,
+            studioGoogleMapsUrl: classData.studioGoogleMapsUrl,
+            bookedAt: new Date().toISOString(),
+          };
+
+          set((state) => ({
+            profile: {
+              ...state.profile,
+              bookings: [...state.profile.bookings, booking],
+            },
+          }));
+
+          // Also add to schedule
+          const label = `${booking.className} — ${booking.time} (${booking.studioName})`;
+          get().addToSchedule({
+            type: 'class',
+            data: classData,
+            label,
+          });
+
+          return booking;
+        } catch (err) {
+          console.warn('Fitness book error:', err);
+          return null;
+        }
+      },
+
+      cancelBooking: async (id) => {
+        try {
+          const res = await fetch(`/api/fitness/book/${id}`, {
+            method: 'DELETE',
+            headers: apiHeaders(),
+          });
+
+          if (!res.ok) return false;
+
+          set((state) => ({
+            profile: {
+              ...state.profile,
+              bookings: state.profile.bookings.filter((b) => b.id !== id),
+            },
+          }));
+
+          return true;
+        } catch {
+          return false;
+        }
+      },
+
       hydrateFromDb: async () => {
         if (fitnessHydrationPromise) return fitnessHydrationPromise;
 
         fitnessHydrationPromise = (async () => {
           try {
             const headers = apiHeaders();
-            const [bookmarksRes, scheduleRes] = await Promise.all([
+            const [bookmarksRes, scheduleRes, bookingsRes] = await Promise.all([
               fetch('/api/fitness/bookmarks', { headers }),
               fetch('/api/fitness/schedule', { headers }),
+              fetch('/api/fitness/bookings', { headers }),
             ]);
 
             const dbBookmarks = bookmarksRes.ok ? (await bookmarksRes.json()).bookmarks || [] : [];
             const dbSchedule = scheduleRes.ok ? (await scheduleRes.json()).schedule || [] : [];
+            const dbBookings = bookingsRes.ok ? (await bookingsRes.json()).bookings || [] : [];
 
             set((state) => {
               const localBookmarkLabels = new Set(state.profile.bookmarks.map((b) => b.label));
@@ -274,6 +382,7 @@ export const useFitnessStore = create<FitnessStore>()(
                   ...state.profile,
                   bookmarks: mergedBookmarks,
                   schedule: mergedSchedule,
+                  bookings: dbBookings,
                 },
               };
             });
@@ -291,6 +400,13 @@ export const useFitnessStore = create<FitnessStore>()(
     }),
     {
       name: 'girlbot-fitness-profile',
+      partialize: (state: any) => ({
+        profile: {
+          ...state.profile,
+          // Exclude ephemeral data from persistence — only needed within a session
+          lastSearchResults: [],
+        },
+      }),
       merge: (persisted: any, current: any) => {
         const persistedProfile = persisted?.profile || {};
         return {
@@ -301,6 +417,8 @@ export const useFitnessStore = create<FitnessStore>()(
             recentSearches: persistedProfile.recentSearches || [],
             bookmarks: persistedProfile.bookmarks || [],
             schedule: persistedProfile.schedule || [],
+            bookings: persistedProfile.bookings || [],
+            lastSearchResults: [],
             preferredClassTypes: persistedProfile.preferredClassTypes || [],
             preferredTimes: persistedProfile.preferredTimes || [],
           },

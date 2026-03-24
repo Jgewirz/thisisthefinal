@@ -1,7 +1,7 @@
-import { Clock, MapPin, User, Users, Bookmark, ExternalLink, Dumbbell } from 'lucide-react';
+import { Clock, MapPin, User, Users, Bookmark, ExternalLink, Dumbbell, Check, Globe } from 'lucide-react';
 
 export interface FitnessClassCardData {
-  classId: number;
+  classId: number | string;
   className: string;
   classDescription: string;
   instructor: string;
@@ -18,19 +18,29 @@ export interface FitnessClassCardData {
   isWaitlistAvailable: boolean;
   difficulty: string | null;
   category: string;
-  bookingStatus: 'available' | 'full' | 'waitlist' | 'canceled';
+  bookingStatus: 'available' | 'full' | 'waitlist' | 'canceled' | 'booked';
   siteId: string;
   studioLat: number | null;
   studioLng: number | null;
   distance: string | null;
+  // Extended booking fields
+  bookingPlatform?: 'mindbody' | 'website' | 'none';
+  bookingUrl?: string;
+  mindbodySiteId?: string;
+  mindbodyClassId?: string;
+  studioWebsite?: string;
+  studioGoogleMapsUrl?: string;
 }
 
 interface FitnessClassCardProps {
   data: FitnessClassCardData;
   agentColor: string;
   isScheduled?: boolean;
+  isBooked?: boolean;
   onSchedule?: (data: FitnessClassCardData) => void;
   onBookmark?: (data: FitnessClassCardData) => void;
+  onBook?: (data: FitnessClassCardData) => void;
+  onBookBrowser?: (data: FitnessClassCardData) => void;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -54,18 +64,23 @@ const STATUS_CONFIG: Record<string, { label: string; bg: string; text: string }>
   full: { label: 'Full', bg: 'var(--error)', text: 'white' },
   waitlist: { label: 'Waitlist', bg: 'var(--warning)', text: 'var(--bg-primary)' },
   canceled: { label: 'Canceled', bg: 'var(--text-secondary)', text: 'var(--bg-primary)' },
+  booked: { label: 'Booked', bg: 'var(--success)', text: 'var(--bg-primary)' },
 };
 
 export function FitnessClassCard({
   data,
   agentColor,
   isScheduled = false,
+  isBooked = false,
   onSchedule,
   onBookmark,
+  onBook,
+  onBookBrowser,
 }: FitnessClassCardProps) {
-  const status = STATUS_CONFIG[data.bookingStatus] || STATUS_CONFIG.available;
+  const effectiveStatus = isBooked ? 'booked' : data.bookingStatus;
+  const status = STATUS_CONFIG[effectiveStatus] || STATUS_CONFIG.available;
   const categoryIcon = CATEGORY_ICONS[data.category] || '💪';
-  const bookingUrl = `https://clients.mindbodyonline.com/classic/ws?studioid=${data.siteId}`;
+  const bookingUrl = data.bookingUrl || (data.siteId ? `https://clients.mindbodyonline.com/classic/ws?studioid=${data.siteId}` : data.studioWebsite || '');
 
   // Spots urgency coloring
   const spotsColor =
@@ -192,24 +207,80 @@ export function FitnessClassCard({
           </div>
         </div>
 
+        {/* Booking platform badge */}
+        {data.bookingPlatform && (
+          <div className="flex items-center gap-2">
+            <span
+              className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+              style={{
+                backgroundColor: data.bookingPlatform === 'mindbody' ? 'rgba(34,197,94,0.15)' : `${agentColor}15`,
+                color: data.bookingPlatform === 'mindbody' ? '#22c55e' : agentColor,
+              }}
+            >
+              {data.bookingPlatform === 'mindbody' ? 'Mindbody' : data.bookingPlatform === 'website' ? 'Website' : 'Schedule only'}
+            </span>
+          </div>
+        )}
+
         {/* Action buttons */}
         <div className="flex gap-2 pt-1">
-          {/* Book button */}
-          <a
-            href={bookingUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-opacity hover:opacity-90"
-            style={{
-              backgroundColor: data.bookingStatus === 'canceled' ? 'var(--text-secondary)' : agentColor,
-              color: 'var(--bg-primary)',
-              pointerEvents: data.bookingStatus === 'canceled' ? 'none' : 'auto',
-              opacity: data.bookingStatus === 'canceled' ? 0.5 : 1,
-            }}
-          >
-            <ExternalLink size={14} />
-            Book
-          </a>
+          {/* Book button — in-app or external */}
+          {isBooked ? (
+            <div
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-full text-sm font-medium"
+              style={{ backgroundColor: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
+            >
+              <Check size={14} />
+              Booked
+            </div>
+          ) : onBook ? (
+            <button
+              onClick={() => onBook(data)}
+              disabled={data.bookingStatus === 'canceled' || data.bookingStatus === 'full'}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-opacity hover:opacity-90 disabled:opacity-50"
+              style={{
+                backgroundColor: agentColor,
+                color: 'var(--bg-primary)',
+              }}
+            >
+              <Dumbbell size={14} />
+              {data.bookingPlatform === 'website' ? 'Add to Schedule' : 'Book Class'}
+            </button>
+          ) : (
+            <a
+              href={bookingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-opacity hover:opacity-90"
+              style={{
+                backgroundColor: data.bookingStatus === 'canceled' ? 'var(--text-secondary)' : agentColor,
+                color: 'var(--bg-primary)',
+                pointerEvents: data.bookingStatus === 'canceled' ? 'none' : 'auto',
+                opacity: data.bookingStatus === 'canceled' ? 0.5 : 1,
+              }}
+            >
+              <ExternalLink size={14} />
+              Book
+            </a>
+          )}
+
+          {/* Browser booking button — for website-based studios */}
+          {onBookBrowser && !isBooked && data.bookingPlatform === 'website' && (data.studioWebsite || data.bookingUrl) && (
+            <button
+              onClick={() => onBookBrowser(data)}
+              disabled={data.bookingStatus === 'canceled' || data.bookingStatus === 'full'}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-sm font-medium border transition-opacity hover:opacity-90 disabled:opacity-50"
+              style={{
+                borderColor: agentColor + '40',
+                color: agentColor,
+                backgroundColor: 'transparent',
+              }}
+              title="Book via automated browser"
+            >
+              <Globe size={14} />
+              Auto-Book
+            </button>
+          )}
 
           {/* Schedule / Save button */}
           {onSchedule && (

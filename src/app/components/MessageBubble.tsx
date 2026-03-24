@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Message, agents } from '../types';
 import { Check, CheckCheck, Star } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -6,16 +7,25 @@ import { PlaceCard } from './cards/PlaceCard';
 import { ColorSeasonCard } from './cards/ColorSeasonCard';
 import { FitnessClassCard } from './cards/FitnessClassCard';
 import type { FitnessClassCardData } from './cards/FitnessClassCard';
+import { FitnessStudioCard } from './cards/FitnessStudioCard';
+import type { FitnessStudioCardData } from './cards/FitnessStudioCard';
+import { BookingConfirmationCard } from './cards/BookingConfirmationCard';
+import { ReservationConfirmationCard } from './cards/ReservationConfirmationCard';
 import { FlightCard } from './cards/FlightCard';
 import { HotelCard } from './cards/HotelCard';
 import { WardrobeItemCard } from './cards/WardrobeItemCard';
 import { CheapestDatesCard } from './cards/CheapestDatesCard';
+import { RestaurantCard } from './cards/RestaurantCard';
+import { FlightBookingConfirmationCard } from './cards/FlightBookingConfirmationCard';
 import { useTravelStore } from '../../stores/travel';
 import { useFitnessStore } from '../../stores/fitness';
 
 interface MessageBubbleProps {
   message: Message;
   onAction?: (text: string) => void;
+  onReserve?: (data: any) => void;
+  onBookFlight?: (data: any) => void;
+  onBookFitnessClass?: (data: any) => void;
 }
 
 function OutfitRatingCard({
@@ -136,19 +146,24 @@ function FlightCardWithSelection({
   data,
   agentColor,
   onAction,
+  onBook,
 }: {
   data: any;
   agentColor: string;
   onAction?: (text: string) => void;
+  onBook?: (data: any) => void;
 }) {
   const label = makeFlightLabel(data);
   const isSelected = useTravelStore((s) => s.profile.tripSelections.some((t) => t.label === label));
+  const isSaved = useTravelStore((s) => s.profile.bookmarks.some((b) => b.label === label));
 
   return (
     <FlightCard
       data={data}
       agentColor={agentColor}
       isSelected={isSelected}
+      isSaved={isSaved}
+      onBook={onBook}
       onSelect={(flightData) => {
         const store = useTravelStore.getState();
         const flightLabel = makeFlightLabel(flightData);
@@ -166,20 +181,28 @@ function FlightCardWithSelection({
         }
       }}
       onBookmark={(flightData) => {
-        useTravelStore.getState().addBookmark({
-          type: 'flight',
-          data: {
-            bookingUrl: flightData.bookingUrl || '',
-            airline: flightData.airline,
-            flightNumber: flightData.flightNumber || '',
-            price: flightData.price,
-            departure: flightData.departure,
-            arrival: flightData.arrival,
-            departureDate: flightData.departureDate || '',
-            returnDate: flightData.returnTrip?.departureDate || null,
-          },
-          label: makeFlightLabel(flightData),
-        });
+        const store = useTravelStore.getState();
+        const flightLabel = makeFlightLabel(flightData);
+        const existing = store.profile.bookmarks.find((b) => b.label === flightLabel);
+
+        if (existing) {
+          store.removeBookmark(existing.id);
+        } else {
+          store.addBookmark({
+            type: 'flight',
+            data: {
+              bookingUrl: flightData.bookingUrl || '',
+              airline: flightData.airline,
+              flightNumber: flightData.flightNumber || '',
+              price: flightData.price,
+              departure: flightData.departure,
+              arrival: flightData.arrival,
+              departureDate: flightData.departureDate || '',
+              returnDate: flightData.returnTrip?.departureDate || null,
+            },
+            label: flightLabel,
+          });
+        }
       }}
     />
   );
@@ -236,18 +259,32 @@ function makeFitnessLabel(data: FitnessClassCardData): string {
 function FitnessClassCardWithSelection({
   data,
   agentColor,
+  onBookBrowser,
 }: {
   data: FitnessClassCardData;
   agentColor: string;
+  onBookBrowser?: (data: FitnessClassCardData) => void;
 }) {
   const label = makeFitnessLabel(data);
   const isScheduled = useFitnessStore((s) => s.profile.schedule.some((t) => t.label === label));
+  const isBooked = useFitnessStore((s) =>
+    s.profile.bookings.some((b) =>
+      b.className === data.className && b.time === data.time && b.studioName === data.studioName && b.bookingStatus === 'confirmed'
+    )
+  );
 
   return (
     <FitnessClassCard
       data={data}
       agentColor={agentColor}
       isScheduled={isScheduled}
+      isBooked={isBooked}
+      onBook={async (classData) => {
+        const store = useFitnessStore.getState();
+        const platform = (classData as any).bookingPlatform || 'manual';
+        await store.bookClass(classData, platform);
+      }}
+      onBookBrowser={onBookBrowser}
       onSchedule={(classData) => {
         const store = useFitnessStore.getState();
         const classLabel = makeFitnessLabel(classData);
@@ -275,7 +312,63 @@ function FitnessClassCardWithSelection({
   );
 }
 
-export function MessageBubble({ message, onAction }: MessageBubbleProps) {
+function FitnessStudioCardWithActions({
+  data,
+  agentColor,
+}: {
+  data: FitnessStudioCardData;
+  agentColor: string;
+}) {
+  const isBookmarked = useFitnessStore((s) =>
+    s.profile.bookmarks.some((b) => b.label === data.name)
+  );
+  const schedule = useFitnessStore((s) => s.profile.schedule);
+  const scheduledLabels = useMemo(() => schedule.map((item) => item.label), [schedule]);
+
+  return (
+    <FitnessStudioCard
+      data={data}
+      agentColor={agentColor}
+      isBookmarked={isBookmarked}
+      scheduledLabels={scheduledLabels}
+      onBookmark={(studioData) => {
+        const store = useFitnessStore.getState();
+        const existing = store.profile.bookmarks.find((b) => b.label === studioData.name);
+        if (existing) {
+          store.removeBookmark(existing.id);
+        } else {
+          store.addBookmark({
+            type: 'class',
+            data: studioData as any,
+            label: studioData.name,
+          });
+        }
+      }}
+      onScheduleClass={(studioData, cls) => {
+        const label = `${cls.name} — ${cls.time} (${studioData.name})`;
+        const store = useFitnessStore.getState();
+        const exists = store.profile.schedule.find((s) => s.label === label);
+        if (exists) {
+          store.removeFromSchedule(exists.id);
+        } else {
+          store.addToSchedule({
+            type: 'class',
+            data: {
+              ...cls,
+              studioName: studioData.name,
+              studioAddress: studioData.address,
+              website: studioData.website,
+              googleMapsUrl: studioData.googleMapsUrl,
+            } as any,
+            label,
+          });
+        }
+      }}
+    />
+  );
+}
+
+export function MessageBubble({ message, onAction, onReserve, onBookFlight, onBookFitnessClass }: MessageBubbleProps) {
   const agent = agents[message.agentId];
   const isUser = message.type === 'user';
 
@@ -352,6 +445,20 @@ export function MessageBubble({ message, onAction }: MessageBubbleProps) {
                 <FitnessClassCardWithSelection
                   data={message.richCard.data}
                   agentColor={agent.color}
+                  onBookBrowser={onBookFitnessClass}
+                />
+              )}
+              {message.richCard.type === 'fitnessStudio' && (
+                <FitnessStudioCardWithActions
+                  data={message.richCard.data}
+                  agentColor={agent.color}
+                />
+              )}
+              {message.richCard.type === 'restaurant' && (
+                <RestaurantCard
+                  data={message.richCard.data}
+                  agentColor={agent.color}
+                  onReserve={onReserve}
                 />
               )}
               {message.richCard.type === 'flight' && (
@@ -359,6 +466,13 @@ export function MessageBubble({ message, onAction }: MessageBubbleProps) {
                   data={message.richCard.data}
                   agentColor={agent.color}
                   onAction={onAction}
+                  onBook={onBookFlight}
+                />
+              )}
+              {message.richCard.type === 'flightBookingConfirmation' && (
+                <FlightBookingConfirmationCard
+                  data={message.richCard.data}
+                  agentColor={agent.color}
                 />
               )}
               {message.richCard.type === 'hotel' && (
@@ -386,6 +500,30 @@ export function MessageBubble({ message, onAction }: MessageBubbleProps) {
                   agentColor={agent.color}
                   onSelectDate={(origin, destination, date) => {
                     onAction?.(`Find flights from ${origin} to ${destination} on ${date}`);
+                  }}
+                />
+              )}
+              {message.richCard.type === 'bookingConfirmation' && (
+                <BookingConfirmationCard
+                  data={message.richCard.data}
+                  agentColor={agent.color}
+                  onCancel={async (bookingId) => {
+                    await useFitnessStore.getState().cancelBooking(bookingId);
+                  }}
+                />
+              )}
+              {message.richCard.type === 'reservationConfirmation' && (
+                <ReservationConfirmationCard
+                  data={message.richCard.data}
+                  agentColor={agent.color}
+                  onCancel={async (reservationId) => {
+                    try {
+                      await fetch(`/api/dining/reservations/${reservationId}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ status: 'cancelled' }),
+                      });
+                    } catch { /* silent */ }
                   }}
                 />
               )}

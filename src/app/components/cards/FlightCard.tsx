@@ -1,4 +1,4 @@
-import { Plane, Clock, Luggage, Wifi, Plug, MonitorPlay, Bookmark, ArrowRight, Users, Check, ExternalLink } from 'lucide-react';
+import { Plane, Clock, Luggage, Wifi, Plug, MonitorPlay, Bookmark, ArrowRight, Users, Check, ExternalLink, Bot } from 'lucide-react';
 
 interface FlightSegment {
   flightNumber: string;
@@ -79,8 +79,10 @@ interface FlightCardProps {
   data: FlightCardData;
   agentColor: string;
   isSelected?: boolean;
+  isSaved?: boolean;
   onSelect?: (data: FlightCardData) => void;
   onBookmark?: (data: FlightCardData) => void;
+  onBook?: (data: FlightCardData) => void;
 }
 
 function formatDateLabel(dateStr: string): string {
@@ -226,7 +228,7 @@ function RouteSection({
   );
 }
 
-export function FlightCard({ data, agentColor, isSelected, onSelect, onBookmark }: FlightCardProps) {
+export function FlightCard({ data, agentColor, isSelected, isSaved, onSelect, onBookmark, onBook }: FlightCardProps) {
   const tierColors = {
     Budget: 'var(--success)',
     Balanced: 'var(--accent-travel)',
@@ -404,7 +406,19 @@ export function FlightCard({ data, agentColor, isSelected, onSelect, onBookmark 
             </div>
           )}
           <div className="flex items-center gap-2">
-            {data.bookingUrl && (
+            {onBook ? (
+              <button
+                onClick={() => onBook(data)}
+                className="px-3 py-1.5 rounded-full transition-colors text-sm flex items-center gap-1"
+                style={{
+                  backgroundColor: agentColor,
+                  color: 'var(--bg-primary)',
+                }}
+              >
+                <Bot size={14} />
+                Book with Agent
+              </button>
+            ) : data.bookingUrl ? (
               <a
                 href={data.bookingUrl}
                 target="_blank"
@@ -419,19 +433,19 @@ export function FlightCard({ data, agentColor, isSelected, onSelect, onBookmark 
                 <ExternalLink size={14} />
                 Book
               </a>
-            )}
+            ) : null}
             {onBookmark && (
               <button
                 onClick={() => onBookmark(data)}
                 className="px-3 py-1.5 rounded-full transition-colors text-sm flex items-center gap-1 border"
                 style={{
-                  borderColor: agentColor + '40',
-                  color: agentColor,
-                  backgroundColor: 'transparent',
+                  borderColor: isSaved ? 'var(--success)' : agentColor + '40',
+                  color: isSaved ? 'var(--success)' : agentColor,
+                  backgroundColor: isSaved ? 'var(--success)' + '15' : 'transparent',
                 }}
               >
-                <Bookmark size={14} />
-                Save
+                <Bookmark size={14} fill={isSaved ? 'currentColor' : 'none'} />
+                {isSaved ? 'Saved' : 'Save'}
               </button>
             )}
             <button

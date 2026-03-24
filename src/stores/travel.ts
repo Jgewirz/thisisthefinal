@@ -46,6 +46,12 @@ export interface TripSelection {
   selectedAt: string;
 }
 
+export interface LastSearchIntent {
+  type: string;
+  params: Record<string, any>;
+  timestamp: string;
+}
+
 export interface TravelProfile {
   homeAirport: string | null;
   preferredCabin: 'ECONOMY' | 'PREMIUM_ECONOMY' | 'BUSINESS' | 'FIRST';
@@ -56,6 +62,7 @@ export interface TravelProfile {
   maxPricePreference: number | null;
   preferredAirlines: string[];
   excludedAirlines: string[];
+  lastSearchIntent: LastSearchIntent | null;
 }
 
 export interface RecentSearch {
@@ -74,8 +81,19 @@ export interface TravelBookmark {
   createdAt: string;
 }
 
+export interface ActiveBooking {
+  jobId: string;
+  flightData: Record<string, any>;
+  passengerInfo: Record<string, any>;
+  status: string;
+}
+
 interface TravelStore {
   profile: TravelProfile;
+  activeBooking: ActiveBooking | null;
+  startBooking: (flightData: Record<string, any>, passengerInfo: Record<string, any>) => Promise<string>;
+  updateBookingStatus: (status: string) => void;
+  clearActiveBooking: () => void;
   setHomeAirport: (airport: string | null) => void;
   setPreferredCabin: (cabin: TravelProfile['preferredCabin']) => void;
   setPreferredCurrency: (currency: string) => void;
@@ -91,6 +109,7 @@ interface TravelStore {
   removePreferredAirline: (code: string) => void;
   addExcludedAirline: (code: string) => void;
   removeExcludedAirline: (code: string) => void;
+  setLastSearchIntent: (intent: { type: string; params: Record<string, any> } | null) => void;
   hydrateFromDb: () => Promise<void>;
   resetProfile: () => void;
 }
@@ -105,6 +124,7 @@ const defaultProfile: TravelProfile = {
   maxPricePreference: null,
   preferredAirlines: [],
   excludedAirlines: [],
+  lastSearchIntent: null,
 };
 
 let travelHydrationPromise: Promise<void> | null = null;
@@ -113,6 +133,35 @@ export const useTravelStore = create<TravelStore>()(
   persist(
     (set, get) => ({
       profile: { ...defaultProfile },
+      activeBooking: null,
+
+      startBooking: async (flightData, passengerInfo) => {
+        const res = await fetch('/api/travel/book', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({ flightData, passengerInfo }),
+        });
+        if (!res.ok) throw new Error('Failed to start booking');
+        const data = await res.json();
+        set({
+          activeBooking: {
+            jobId: data.jobId,
+            flightData,
+            passengerInfo,
+            status: data.status,
+          },
+        });
+        return data.jobId;
+      },
+
+      updateBookingStatus: (status) =>
+        set((state) => ({
+          activeBooking: state.activeBooking
+            ? { ...state.activeBooking, status }
+            : null,
+        })),
+
+      clearActiveBooking: () => set({ activeBooking: null }),
 
       setHomeAirport: (airport) =>
         set((state) => ({
@@ -281,6 +330,16 @@ export const useTravelStore = create<TravelStore>()(
           },
         })),
 
+      setLastSearchIntent: (intent: { type: string; params: Record<string, any> } | null) =>
+        set((state: { profile: TravelProfile }) => ({
+          profile: {
+            ...state.profile,
+            lastSearchIntent: intent
+              ? { type: intent.type, params: intent.params, timestamp: new Date().toISOString() }
+              : null,
+          },
+        })),
+
       hydrateFromDb: async () => {
         if (travelHydrationPromise) return travelHydrationPromise;
 
@@ -345,6 +404,7 @@ export const useTravelStore = create<TravelStore>()(
             tripSelections: persistedProfile.tripSelections || [],
             preferredAirlines: persistedProfile.preferredAirlines || [],
             excludedAirlines: persistedProfile.excludedAirlines || [],
+            lastSearchIntent: persistedProfile.lastSearchIntent || null,
           },
         };
       },

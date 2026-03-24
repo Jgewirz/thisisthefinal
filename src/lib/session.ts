@@ -22,3 +22,7 @@ export async function ensureSession(): Promise<void> {
     throw new Error('Failed to initialize authenticated session');
   }
 }
+
+export function loginWithGoogle(): void {
+  window.location.href = '/api/auth/google';
+}

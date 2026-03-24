@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "server": "tsx watch server/index.ts",
-    "dev:all": "concurrently \"npm run dev\" \"npm run server\""
+    "server:booking": "cd booking-agent && uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+    "dev:all": "concurrently \"npm run dev\" \"npm run server\" \"npm run server:booking\""
   },
   "dependencies": {
     "@babel/code-frame": "^7.29.0",
