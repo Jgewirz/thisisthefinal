@@ -7,7 +7,9 @@ import {
   searchCheapestDates,
   autocompleteLocation,
   isAmadeusConfigured,
+  isAmadeusTestMode,
 } from '../services/amadeus.js';
+import { searchFlightsSerpApi, isSerpApiConfigured } from '../services/serpapi-flights.js';
 import {
   searchPlaces,
   fetchPlacePhoto,
@@ -51,13 +53,22 @@ router.post('/extract', async (req: Request, res: Response) => {
   }
 });
 
-// ── POST /api/travel/flights — Amadeus flight search ───────────────────
-router.post('/flights', async (req: Request, res: Response) => {
-  if (!isAmadeusConfigured()) {
-    res.status(503).json({ error: 'Amadeus API not configured' });
-    return;
-  }
+// ── Fallback deep links when Amadeus is unavailable or returns zero ────
+function buildFlightFallbackLinks(origin: string, destination: string, departureDate: string, returnDate?: string, adults?: number) {
+  const a = adults || 1;
+  // Skyscanner date format: YYMMDD
+  const skyDate = departureDate.replace(/-/g, '').slice(2);
+  const skyReturn = returnDate ? returnDate.replace(/-/g, '').slice(2) : '';
 
+  return {
+    googleFlights: `https://www.google.com/travel/flights?q=Flights+from+${origin}+to+${destination}+on+${departureDate}${returnDate ? `+returning+${returnDate}` : ''}&curr=USD&hl=en`,
+    skyscanner: `https://www.skyscanner.com/transport/flights/${origin.toLowerCase()}/${destination.toLowerCase()}/${skyDate}/${skyReturn ? skyReturn + '/' : ''}`,
+    kayak: `https://www.kayak.com/flights/${origin}-${destination}/${departureDate}${returnDate ? `/${returnDate}` : ''}/${a}adults`,
+  };
+}
+
+// ── POST /api/travel/flights — SerpAPI → Amadeus → fallback chain ─────
+router.post('/flights', async (req: Request, res: Response) => {
   const { origin, destination, departureDate, returnDate, adults, cabinClass, currency, nonStop, maxPrice, includedAirlineCodes, excludedAirlineCodes } = req.body;
 
   if (!origin || !destination || !departureDate) {
@@ -65,42 +76,66 @@ router.post('/flights', async (req: Request, res: Response) => {
     return;
   }
 
+  const userId = (req as any).userId as string;
+  ensureUser(userId);
+
+  const fallbackLinks = buildFlightFallbackLinks(origin, destination, departureDate, returnDate, adults);
+  const searchParams = { origin, destination, departureDate, returnDate, adults, cabinClass, includedAirlineCodes, excludedAirlineCodes };
+
+  // ── Source 1: SerpAPI Google Flights (real prices, no partnership needed) ──
+  if (isSerpApiConfigured()) {
+    try {
+      const results = await searchFlightsSerpApi(searchParams);
+      if (results.length > 0) {
+        logSearch(userId, 'flight_search', searchParams, results.length, 'serpapi');
+        res.json({ results, source: 'serpapi', fallbackLinks });
+        return;
+      }
+      console.log(`[flights] SerpAPI returned 0 results for ${origin}→${destination} — trying Amadeus`);
+    } catch (err: any) {
+      console.error('[flights] SerpAPI failed:', err.message, '— trying Amadeus');
+    }
+  }
+
+  // ── Source 2: Amadeus (if configured) ──
+  if (isAmadeusConfigured()) {
+    try {
+      const results = await searchFlights({
+        origin, destination, departureDate, returnDate, adults,
+        cabinClass, currency, nonStop, maxPrice,
+        includedAirlineCodes, excludedAirlineCodes,
+      });
+
+      if (results.length > 0) {
+        logSearch(userId, 'flight_search', searchParams, results.length, 'amadeus');
+        res.json({ results, source: 'amadeus', fallbackLinks });
+        return;
+      }
+
+      if (isAmadeusTestMode()) {
+        console.warn(`[flights] Amadeus test env returned 0 results for ${origin}→${destination}`);
+      }
+    } catch (err: any) {
+      console.error('[flights] Amadeus failed:', err.message);
+    }
+  }
+
+  // ── Source 3: Fallback affiliate links (always available) ──
+  if (!isSerpApiConfigured() && !isAmadeusConfigured()) {
+    console.warn('[flights] No flight API configured — returning fallback links only');
+  }
+  logSearch(userId, 'flight_search', searchParams, 0, 'fallback');
+  res.json({ results: [], source: 'fallback', fallbackLinks });
+});
+
+function logSearch(userId: string, intentType: string, params: Record<string, any>, resultCount: number, source: string) {
   try {
-    const userId = (req as any).userId as string;
-    ensureUser(userId);
-
-    const results = await searchFlights({
-      origin,
-      destination,
-      departureDate,
-      returnDate,
-      adults,
-      cabinClass,
-      currency,
-      nonStop,
-      maxPrice,
-      includedAirlineCodes,
-      excludedAirlineCodes,
-    });
-
-    // Log the search
     const db = getDb();
     db.prepare(
       'INSERT INTO travel_searches (id, user_id, intent_type, params, result_count) VALUES (?, ?, ?, ?, ?)'
-    ).run(
-      crypto.randomUUID(),
-      userId,
-      'flight_search',
-      JSON.stringify({ origin, destination, departureDate, returnDate, adults, cabinClass }),
-      results.length
-    );
-
-    res.json({ results });
-  } catch (err: any) {
-    console.error('Flight search error:', err.message);
-    res.status(500).json({ error: 'Flight search failed' });
-  }
-});
+    ).run(crypto.randomUUID(), userId, intentType, JSON.stringify({ ...params, source }), resultCount);
+  } catch { /* non-critical */ }
+}
 
 // ── POST /api/travel/cheapest-dates — Amadeus cheapest dates search ────
 router.post('/cheapest-dates', async (req: Request, res: Response) => {

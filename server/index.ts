@@ -23,6 +23,10 @@ function validateServerConfig() {
 
   const optionalGroups = [
     {
+      name: 'SerpAPI Google Flights (primary flight data)',
+      keys: ['SERP_API_KEY'],
+    },
+    {
       name: 'Amadeus travel search',
       keys: ['AMADEUS_CLIENT_ID', 'AMADEUS_CLIENT_SECRET'],
     },
@@ -55,6 +59,11 @@ function validateServerConfig() {
 }
 
 validateServerConfig();
+
+// Log flight data source status
+const serpOk = !!process.env.SERP_API_KEY?.trim();
+const amadeusOk = !!(process.env.AMADEUS_CLIENT_ID?.trim() && process.env.AMADEUS_CLIENT_SECRET?.trim());
+console.log(`[flights] Data sources: SerpAPI=${serpOk ? 'ACTIVE' : 'off'}, Amadeus=${amadeusOk ? 'ACTIVE' : 'off'}${!serpOk && !amadeusOk ? ' — will use fallback links only' : ''}`);
 
 // Initialize SQLite + run migrations before anything else
 runMigrations();

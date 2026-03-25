@@ -59,6 +59,7 @@ export interface Message {
 export type RichCardType =
   | 'place'
   | 'flight'
+  | 'flightFallback'
   | 'hotel'
   | 'outfit'
   | 'colorSeason'

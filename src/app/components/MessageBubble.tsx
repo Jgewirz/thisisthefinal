@@ -18,6 +18,7 @@ import { CheapestDatesCard } from './cards/CheapestDatesCard';
 import { RestaurantCard } from './cards/RestaurantCard';
 import type { ResySlotData } from './cards/RestaurantCard';
 import { FlightBookingConfirmationCard } from './cards/FlightBookingConfirmationCard';
+import { FlightFallbackCard } from './cards/FlightFallbackCard';
 import { ResyLinkForm } from './ResyLinkForm';
 import { HatchLinkForm } from './HatchLinkForm';
 import { HatchControlCard } from './cards/HatchControlCard';
@@ -490,6 +491,9 @@ export function MessageBubble({ message, onAction, onReserve, onBookFlight, onBo
                   onAction={onAction}
                   onBook={onBookFlight}
                 />
+              )}
+              {message.richCard.type === 'flightFallback' && (
+                <FlightFallbackCard data={message.richCard.data} />
               )}
               {message.richCard.type === 'flightBookingConfirmation' && (
                 <FlightBookingConfirmationCard

@@ -155,7 +155,7 @@ export async function extractTravelParams(
 Return ONLY valid JSON in one of these formats:
 
 For flights:
-{"type":"flight_search","params":{"origin":"JFK","destination":"NRT","departureDate":"2026-06-01","returnDate":"2026-06-15","adults":1,"cabinClass":"ECONOMY","nonStop":false,"maxPrice":null,"includedAirlineCodes":null,"excludedAirlineCodes":null}}
+{"type":"flight_search","params":{"origin":"JFK","destination":"NRT","originCityName":"New York","destinationCityName":"Tokyo","departureDate":"2026-06-01","returnDate":"2026-06-15","adults":1,"cabinClass":"ECONOMY","nonStop":false,"maxPrice":null,"includedAirlineCodes":null,"excludedAirlineCodes":null}}
 
 For cheapest/flexible date searches:
 {"type":"cheapest_dates","params":{"origin":"JFK","destination":"NRT","departureDate":"2026-06-01"}}
@@ -171,19 +171,23 @@ For non-travel messages:
 
 GENERAL RULES:
 - Resolve city names to IATA city codes for hotels (New York→NYC, London→LON, Tokyo→TYO, Paris→PAR, Los Angeles→LAX, Chicago→CHI, Miami→MIA, San Francisco→SFO, Las Vegas→LAS, Boston→BOS, Washington DC→WAS, Seattle→SEA, Dallas→DFW, Atlanta→ATL, Denver→DEN, Orlando→MCO, Nashville→BNA, New Orleans→MSY, Honolulu→HNL, Barcelona→BCN, Rome→ROM, Dubai→DXB, Bangkok→BKK, Singapore→SIN, Sydney→SYD, Berlin→BER, Amsterdam→AMS, Istanbul→IST, Cancun→CUN, Bali→DPS)
+- For flights, ALWAYS include originCityName and destinationCityName with the human-readable city name (e.g. "Miami", "Las Vegas", "New York")
 - Parse relative dates: "next month" → first of next month, "in June" → June 1st of current/next year
 - Default adults to 1 if not specified
+- Parse passenger counts from natural language: "one seat"/"solo"/"just me"/"for one" → adults:1, "two people"/"me and my friend"/"for 2"/"two seats" → adults:2, "family of 4" → adults:4
 
 FLIGHT RULES:
 - Default cabinClass to "ECONOMY" if not specified
 - Default nonStop to false. Set to true ONLY when user says "nonstop", "non-stop", "direct", or "no stops"
-- Only return "flight_search" if the user mentions flights, flying, airfare, or is refining a previous flight search
+- Only return "flight_search" if the user mentions flights, flying, airfare, booking a trip, or is refining a previous flight search
+- CRITICAL: includedAirlineCodes and excludedAirlineCodes MUST be null unless the user EXPLICITLY names specific airlines. NEVER infer, guess, or hallucinate airline codes. "fly to vegas" → null. "Delta flights" → ["DL"]. If unsure, use null.
 - "flights under $500" or "budget flights under 400" → set maxPrice to the number (e.g. 500, 400)
 - "Delta flights only" or "only fly American" or "find American flights" or "flights on American Airlines" or "show me United flights" → set includedAirlineCodes to IATA codes (e.g. ["DL"], ["AA"], ["UA"])
 - Common airline IATA codes: American Airlines=AA, Delta=DL, United=UA, Southwest=WN, JetBlue=B6, Spirit=NK, Frontier=F9, Alaska=AS, Air France=AF, British Airways=BA, Lufthansa=LH, Emirates=EK, Qatar=QR
 - "no Spirit" or "avoid Frontier" → set excludedAirlineCodes to IATA codes (e.g. ["NK"], ["F9"])
 - When the user says "find [airline] flights" or "search [airline] flights" as a follow-up to a previous flight search, carry forward ALL previous search params (origin, destination, dates, etc.) and ADD the airline filter
 - "cheapest dates to fly" / "flexible dates" / "when is cheapest to fly" → type "cheapest_dates"
+- "book a trip" / "full trip" / "plan a trip" / "trip from X to Y" — return "flight_search" (flights first, the chat agent will guide hotels next)
 
 HOTEL RULES:
 - Only return "hotel_search" if the user mentions hotels, hotel, accommodation, stay, lodging, resort, place to stay, room, suite, OR if the user is clearly refining a previous hotel search from the conversation context (e.g. "something nicer", "cheaper options", "more affordable", "near central park", "with a pool", "show me 5-star")

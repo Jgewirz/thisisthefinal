@@ -311,7 +311,17 @@ function appendRichCards(agentId: AgentId, cards: RichCard[]) {
 function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 20000): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...options, credentials: 'include', signal: controller.signal }).finally(() => clearTimeout(timeout));
+  return fetch(url, { ...options, credentials: 'include', signal: controller.signal })
+    .catch((err) => {
+      // Normalize abort errors: Chrome throws TypeError("Failed to fetch") when
+      // abort fires before response headers arrive, instead of DOMException("AbortError")
+      if (controller.signal.aborted) {
+        const abortErr = new DOMException('The operation was aborted.', 'AbortError');
+        throw abortErr;
+      }
+      throw err;
+    })
+    .finally(() => clearTimeout(timeout));
 }
 
 async function readWithIdleTimeout(
@@ -572,7 +582,9 @@ export async function sendMessage(
       ? 'The request timed out. Please try again!'
       : err.message?.includes('API error')
         ? 'Sorry, I had trouble connecting. Please try again!'
-        : `Something went wrong: ${err.message}`;
+        : (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError') || err.message?.includes('Load failed'))
+          ? 'Couldn\'t reach the server — make sure the backend is running (`npm run server`) and try again!'
+          : `Something went wrong: ${err.message}`;
     store.appendToLastBot(
       agentId,
       message
@@ -794,13 +806,14 @@ async function runTravelSearch(
     const lastSearchIntent = useTravelStore.getState().profile.lastSearchIntent || undefined;
 
     // Step 1: Extract structured intent from user text (with conversation context for follow-ups)
+    // Use a longer timeout since GPT extraction with full context can be slow
     const extractRes = await fetchWithTimeout('/api/travel/extract', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ message: userText, context, userLocation: buildFullLocation(), lastSearchIntent }),
-    });
+    }, 30000);
 
     if (!extractRes.ok) {
       console.warn('[travel] /api/travel/extract returned', extractRes.status);
@@ -861,15 +874,11 @@ async function runTravelSearch(
         }
       }
 
-      // Merge stored airline preferences when GPT didn't extract explicit ones
-      const profile = useTravelStore.getState().profile;
+      // Only apply stored airline preferences when the user explicitly asked for airlines
+      // in THIS message — never silently inject profile preferences as search filters,
+      // as that causes "phantom filter" results (e.g., "no flights on AT, DL" when user
+      // didn't ask for any airline).
       const flightParams = { ...intent.params };
-      if (!flightParams.includedAirlineCodes?.length && profile.preferredAirlines?.length) {
-        flightParams.includedAirlineCodes = profile.preferredAirlines;
-      }
-      if (!flightParams.excludedAirlineCodes?.length && profile.excludedAirlines?.length) {
-        flightParams.excludedAirlineCodes = profile.excludedAirlines;
-      }
 
       const res = await fetchWithTimeout('/api/travel/flights', {
         method: 'POST',
@@ -884,18 +893,45 @@ async function runTravelSearch(
         console.warn('[travel] /api/travel/flights returned', res.status, errBody.slice(0, 200));
         return null;
       }
-      const { results } = await res.json();
+      const { results, fallbackLinks } = await res.json();
 
       if (!results?.length) {
-        // Tell the user no results were found with details about what was searched
-        const airlineNote = flightParams.includedAirlineCodes?.length
-          ? ` on ${flightParams.includedAirlineCodes.join(', ')}`
+        // If fallback links are available, show a card with direct booking links
+        if (fallbackLinks) {
+          const originName = intent.params.originCityName || flightParams.origin;
+          const destName = intent.params.destinationCityName || flightParams.destination;
+
+          // Store the search intent so follow-ups still work
+          useTravelStore.getState().setLastSearchIntent(intent);
+
+          return [{
+            type: 'flightFallback' as const,
+            data: {
+              origin: flightParams.origin,
+              destination: flightParams.destination,
+              originCityName: originName,
+              destinationCityName: destName,
+              departureDate: flightParams.departureDate,
+              returnDate: flightParams.returnDate || undefined,
+              adults: flightParams.adults || 1,
+              links: fallbackLinks,
+            },
+          }];
+        }
+
+        // No fallback links — show a text message
+        const originName = intent.params.originCityName || flightParams.origin;
+        const destName = intent.params.destinationCityName || flightParams.destination;
+        const dateObj = new Date(flightParams.departureDate + 'T12:00:00');
+        const friendlyDate = dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+        const airlineNote = intent.params.includedAirlineCodes?.length
+          ? ` on ${intent.params.includedAirlineCodes.join(', ')}`
           : '';
         const store = useChatStore.getState();
         const noResultMsg: Message = {
           id: crypto.randomUUID(),
           type: 'bot',
-          text: `I couldn't find any flights${airlineNote} from ${flightParams.origin} to ${flightParams.destination} on ${flightParams.departureDate}. Try broadening your search — different dates, removing the airline filter, or checking nearby airports.`,
+          text: `I didn't find flights${airlineNote} from ${originName} to ${destName} on ${friendlyDate}. Want me to check nearby dates or a different route?`,
           timestamp: new Date(),
           agentId: 'travel' as AgentId,
         };

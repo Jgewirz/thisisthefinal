@@ -226,13 +226,23 @@ function getClient(): Amadeus {
       throw new Error('AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET are required');
     }
 
+    const hostname = (process.env.AMADEUS_HOSTNAME as 'test' | 'production') || 'test';
+    console.log(`[amadeus] Initializing with ${hostname} environment`);
+    if (hostname === 'test') {
+      console.warn('[amadeus] Using TEST environment — flight/hotel inventory is limited. Set AMADEUS_HOSTNAME=production for full data.');
+    }
+
     amadeus = new Amadeus({
       clientId,
       clientSecret,
-      hostname: (process.env.AMADEUS_HOSTNAME as 'test' | 'production') || 'test',
+      hostname,
     });
   }
   return amadeus;
+}
+
+export function isAmadeusTestMode(): boolean {
+  return (process.env.AMADEUS_HOSTNAME || 'test') === 'test';
 }
 
 export function isAmadeusConfigured(): boolean {
