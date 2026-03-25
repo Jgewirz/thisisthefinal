@@ -5,9 +5,15 @@ from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
 from browser_use.llm.openai.chat import ChatOpenAI
 from job_store import store
+from browser_utils import (
+    kill_stale_browsers, find_available_debug_port, set_browser_launch_timeout,
+)
+
+# Set browser startup timeout before browser-use reads it
+set_browser_launch_timeout(int(os.getenv("BROWSER_STARTUP_TIMEOUT", "90")))
 
 BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
-BOOKING_TIMEOUT = 90  # seconds
+BOOKING_TIMEOUT = int(os.getenv("FLIGHT_BOOKING_TIMEOUT", "90"))
 
 
 def build_task_prompt(flight_data: dict, passenger_info: dict) -> str:
@@ -59,7 +65,11 @@ async def run_booking(job_id: str, flight_data: dict, passenger_info: dict) -> N
     try:
         await store.update_status(job_id, "navigating", "Opening Google Flights...")
 
-        profile = BrowserProfile(headless=BROWSER_HEADLESS)
+        debug_port = find_available_debug_port()
+        profile = BrowserProfile(
+            headless=BROWSER_HEADLESS,
+            args=[f"--remote-debugging-port={debug_port}"],
+        )
         session = BrowserSession(browser_profile=profile)
         llm = ChatOpenAI(model="gpt-4o", temperature=0)
 

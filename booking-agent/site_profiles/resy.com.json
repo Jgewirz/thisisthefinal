@@ -1,0 +1,31 @@
+{
+  "domain": "resy.com",
+  "studio_name": "Resy",
+  "platform_type": "react-spa",
+  "booking_url": "https://resy.com/",
+  "auth_method": "email-password",
+  "schedule_description": "Restaurant pages have a reservation widget with date picker, time slot grid, and party size selector. Select date/time/party → click Reserve Now → fill guest info → confirm.",
+  "schedule_url": "",
+  "flow_steps": [
+    "Navigate to the restaurant page on resy.com",
+    "Set party size using the party size dropdown/selector",
+    "Set the date using the date picker or calendar arrows",
+    "Browse available time slots in the time grid",
+    "Click on the desired time slot",
+    "Fill in guest name, email, phone on the reservation form",
+    "Add special requests if there's a notes field",
+    "Click 'Reserve Now' or 'Confirm Reservation'",
+    "Wait for the confirmation page to load"
+  ],
+  "obstacles": [
+    "Cookie consent banner may appear on first visit — dismiss it",
+    "Some restaurants require a Resy account to reserve — report LOGIN_REQUIRED",
+    "Time slots may show as 'Notify' instead of available — means no availability",
+    "High-demand restaurants may show no availability for the requested date",
+    "The reservation widget may take 3-5 seconds to load",
+    "Some restaurants require a credit card hold for the reservation — report PAYMENT_REQUIRED",
+    "If the time grid shows 'No times available', try the next or previous day"
+  ],
+  "confidence": 0.7,
+  "last_updated": "2026-03-24"
+}

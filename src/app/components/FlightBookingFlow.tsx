@@ -53,6 +53,7 @@ export function FlightBookingFlow({ flightData, onClose, onComplete, prefillEmai
       const res = await fetch('/api/travel/book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           flightData,
           passengerInfo: passenger,
@@ -67,7 +68,7 @@ export function FlightBookingFlow({ flightData, onClose, onComplete, prefillEmai
       // Start polling for status
       pollingRef.current = setInterval(async () => {
         try {
-          const statusRes = await fetch(`/api/travel/book/${data.jobId}/status`);
+          const statusRes = await fetch(`/api/travel/book/${data.jobId}/status`, { credentials: 'include' });
           if (!statusRes.ok) return;
 
           const statusData = await statusRes.json();
@@ -122,6 +123,7 @@ export function FlightBookingFlow({ flightData, onClose, onComplete, prefillEmai
       const res = await fetch(`/api/travel/book/${jobId}/calendar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();

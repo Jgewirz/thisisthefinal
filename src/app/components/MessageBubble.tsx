@@ -16,9 +16,14 @@ import { HotelCard } from './cards/HotelCard';
 import { WardrobeItemCard } from './cards/WardrobeItemCard';
 import { CheapestDatesCard } from './cards/CheapestDatesCard';
 import { RestaurantCard } from './cards/RestaurantCard';
+import type { ResySlotData } from './cards/RestaurantCard';
 import { FlightBookingConfirmationCard } from './cards/FlightBookingConfirmationCard';
+import { ResyLinkForm } from './ResyLinkForm';
+import { HatchLinkForm } from './HatchLinkForm';
+import { HatchControlCard } from './cards/HatchControlCard';
 import { useTravelStore } from '../../stores/travel';
 import { useFitnessStore } from '../../stores/fitness';
+import { useLifestyleStore } from '../../stores/lifestyle';
 
 interface MessageBubbleProps {
   message: Message;
@@ -26,6 +31,8 @@ interface MessageBubbleProps {
   onReserve?: (data: any) => void;
   onBookFlight?: (data: any) => void;
   onBookFitnessClass?: (data: any) => void;
+  onBookLifestyle?: (data: any) => void;
+  onSelectResySlot?: (slot: ResySlotData & { venueId: number; venueName: string }) => void;
 }
 
 function OutfitRatingCard({
@@ -259,11 +266,11 @@ function makeFitnessLabel(data: FitnessClassCardData): string {
 function FitnessClassCardWithSelection({
   data,
   agentColor,
-  onBookBrowser,
+  onBookClass,
 }: {
   data: FitnessClassCardData;
   agentColor: string;
-  onBookBrowser?: (data: FitnessClassCardData) => void;
+  onBookClass?: (data: FitnessClassCardData) => void;
 }) {
   const label = makeFitnessLabel(data);
   const isScheduled = useFitnessStore((s) => s.profile.schedule.some((t) => t.label === label));
@@ -273,18 +280,23 @@ function FitnessClassCardWithSelection({
     )
   );
 
+  // Use browser booking flow when studio has a website, otherwise fall back to add-to-schedule
+  const hasWebsite = !!(data.studioWebsite || data.bookingUrl);
+
   return (
     <FitnessClassCard
       data={data}
       agentColor={agentColor}
       isScheduled={isScheduled}
       isBooked={isBooked}
-      onBook={async (classData) => {
-        const store = useFitnessStore.getState();
-        const platform = (classData as any).bookingPlatform || 'manual';
-        await store.bookClass(classData, platform);
-      }}
-      onBookBrowser={onBookBrowser}
+      onBook={hasWebsite && onBookClass
+        ? (classData) => onBookClass(classData)
+        : async (classData) => {
+            const store = useFitnessStore.getState();
+            const platform = (classData as any).bookingPlatform || 'manual';
+            await store.bookClass(classData, platform);
+          }
+      }
       onSchedule={(classData) => {
         const store = useFitnessStore.getState();
         const classLabel = makeFitnessLabel(classData);
@@ -368,7 +380,7 @@ function FitnessStudioCardWithActions({
   );
 }
 
-export function MessageBubble({ message, onAction, onReserve, onBookFlight, onBookFitnessClass }: MessageBubbleProps) {
+export function MessageBubble({ message, onAction, onReserve, onBookFlight, onBookFitnessClass, onBookLifestyle, onSelectResySlot }: MessageBubbleProps) {
   const agent = agents[message.agentId];
   const isUser = message.type === 'user';
 
@@ -445,7 +457,7 @@ export function MessageBubble({ message, onAction, onReserve, onBookFlight, onBo
                 <FitnessClassCardWithSelection
                   data={message.richCard.data}
                   agentColor={agent.color}
-                  onBookBrowser={onBookFitnessClass}
+                  onBookClass={onBookFitnessClass}
                 />
               )}
               {message.richCard.type === 'fitnessStudio' && (
@@ -459,6 +471,16 @@ export function MessageBubble({ message, onAction, onReserve, onBookFlight, onBo
                   data={message.richCard.data}
                   agentColor={agent.color}
                   onReserve={onReserve}
+                  onBook={onBookLifestyle ? (data) => onBookLifestyle({
+                    bookingType: 'restaurant' as const,
+                    venueName: data.name,
+                    venueWebsite: data.website || undefined,
+                    venueAddress: data.address,
+                    venuePhone: data.phone || undefined,
+                    venueGoogleMapsUrl: data.googleMapsUrl || undefined,
+                    venuePlaceId: data.id,
+                  }) : undefined}
+                  onSelectSlot={onSelectResySlot}
                 />
               )}
               {message.richCard.type === 'flight' && (
@@ -521,9 +543,37 @@ export function MessageBubble({ message, onAction, onReserve, onBookFlight, onBo
                       await fetch(`/api/dining/reservations/${reservationId}`, {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
                         body: JSON.stringify({ status: 'cancelled' }),
                       });
                     } catch { /* silent */ }
+                  }}
+                />
+              )}
+              {message.richCard.type === 'hatchLink' && (
+                <HatchLinkForm
+                  onLinked={(email, deviceCount) => {
+                    useLifestyleStore.getState().setHatchStatus({ linked: true, email, devices: [], checkedAt: new Date().toISOString() });
+                    onAction?.(`My Hatch is connected! I found ${deviceCount} device${deviceCount !== 1 ? 's' : ''}.`);
+                  }}
+                  onCancel={() => {}}
+                />
+              )}
+              {message.richCard.type === 'hatchControl' && (
+                <HatchControlCard
+                  data={message.richCard.data}
+                  agentColor={agent.color}
+                />
+              )}
+              {message.richCard.type === 'resyLink' && (
+                <ResyLinkForm
+                  onLinked={(email) => {
+                    useLifestyleStore.getState().setResyStatus({ linked: true, email, checkedAt: new Date().toISOString() });
+                    // Re-trigger search so user sees time slots
+                    onAction?.('Show me those restaurants again with available times');
+                  }}
+                  onCancel={() => {
+                    // Dismissed — card stays visible but user can still use restaurants without Resy
                   }}
                 />
               )}

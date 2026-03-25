@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router';
-import { Grid3x3, Palette, Plane, Dumbbell, Coffee, Bookmark, CalendarDays } from 'lucide-react';
+import { Grid3x3, Palette, Plane, Dumbbell, Coffee, Bookmark, CalendarDays, Link2 } from 'lucide-react';
 import { navItems } from '../types';
 
 const iconMap: Record<string, React.ComponentType<any>> = {
@@ -10,6 +10,7 @@ const iconMap: Record<string, React.ComponentType<any>> = {
   Coffee,
   Bookmark,
   CalendarDays,
+  Link2,
 };
 
 export function BottomTabBar() {

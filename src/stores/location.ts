@@ -63,6 +63,7 @@ export const useLocationStore = create<LocationStore>()(
             const res = await fetch('/api/location/reverse-geocode', {
               method: 'POST',
               headers: apiHeaders(),
+              credentials: 'include',
               body: JSON.stringify({ lat, lng }),
             });
             if (res.ok) {
@@ -95,6 +96,7 @@ export const useLocationStore = create<LocationStore>()(
           fetch('/api/location', {
             method: 'POST',
             headers: apiHeaders(),
+            credentials: 'include',
             body: JSON.stringify({ lat, lng, city, region, country, timezone, nearestAirport }),
           }).catch(() => {});
         } catch (err: any) {
@@ -117,6 +119,7 @@ export const useLocationStore = create<LocationStore>()(
           try {
             const res = await fetch('/api/location', {
               headers: apiHeaders(),
+              credentials: 'include',
             });
             if (!res.ok) return;
             const { location: dbLocation } = await res.json();

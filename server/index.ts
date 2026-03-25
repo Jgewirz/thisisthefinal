@@ -12,6 +12,7 @@ import locationRouter from './routes/location.js';
 import calendarRouter from './routes/calendar.js';
 import diningRouter from './routes/dining.js';
 import lifestyleRouter from './routes/lifestyle.js';
+import accountsRouter from './routes/accounts.js';
 import { readSessionUserId } from './services/auth.js';
 
 function validateServerConfig() {
@@ -92,6 +93,7 @@ app.use('/api/location', locationRouter);
 app.use('/api/calendar', calendarRouter);
 app.use('/api/dining', diningRouter);
 app.use('/api/lifestyle', lifestyleRouter);
+app.use('/api/accounts', accountsRouter);
 
 // Global error handler — prevents raw stack traces from leaking to the client
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

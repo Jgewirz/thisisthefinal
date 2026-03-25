@@ -29,6 +29,7 @@ export async function migrateBase64Wardrobe(): Promise<void> {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({
           image: item.imageUrl,
           category: item.category,

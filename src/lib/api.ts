@@ -311,7 +311,7 @@ function appendRichCards(agentId: AgentId, cards: RichCard[]) {
 function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 20000): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeout));
+  return fetch(url, { ...options, credentials: 'include', signal: controller.signal }).finally(() => clearTimeout(timeout));
 }
 
 async function readWithIdleTimeout(
@@ -593,6 +593,7 @@ export async function startFlightBooking(
   const res = await fetch('/api/travel/book', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ flightData, passengerInfo }),
   });
   if (!res.ok) throw new Error('Failed to start booking');
@@ -607,7 +608,7 @@ export function streamBookingStatus(
   const interval = setInterval(async () => {
     if (!active) return;
     try {
-      const res = await fetch(`/api/travel/book/${jobId}/status`);
+      const res = await fetch(`/api/travel/book/${jobId}/status`, { credentials: 'include' });
       if (!res.ok) return;
       const data = await res.json();
       onStatus(data);
@@ -637,6 +638,7 @@ export async function addBookingToCalendar(jobId: string): Promise<{ eventId: st
   const res = await fetch(`/api/travel/book/${jobId}/calendar`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error('Failed to add to calendar');
   return res.json();
@@ -676,6 +678,7 @@ async function runStyleAnalysis(
       headers: {
         'Content-Type': 'application/json',
       },
+      credentials: 'include',
       body: JSON.stringify({ image: imageBase64, type }),
     });
 
@@ -1087,10 +1090,42 @@ async function runLifestyleSearch(
       return null;
     }
 
-    // Step 2: Restaurant or coffee search
-    if (intent.type === 'restaurant_search' || intent.type === 'coffee_search') {
+    // Hatch device control
+    if (intent.type === 'hatch_control') {
+      try {
+        const statusRes = await fetch('/api/lifestyle/hatch-status', { credentials: 'include' });
+        const hatchStatus = await statusRes.json();
+
+        if (!hatchStatus.linked) {
+          return [{ type: 'hatchLink' as const, data: {} }];
+        }
+
+        const controlRes = await fetch('/api/lifestyle/hatch/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            action: intent.params.action,
+            params: intent.params,
+          }),
+        });
+        const result = await controlRes.json();
+
+        if (result.needsLink) {
+          return [{ type: 'hatchLink' as const, data: {} }];
+        }
+
+        return [{ type: 'hatchControl' as const, data: result }];
+      } catch (err) {
+        console.warn('[lifestyle] Hatch control failed:', err);
+        return null;
+      }
+    }
+
+    // Step 2: Restaurant / coffee search / reservation (all show cards first)
+    if (intent.type === 'restaurant_search' || intent.type === 'coffee_search' || intent.type === 'reservation') {
       const searchParams = {
-        textQuery: intent.params.textQuery,
+        textQuery: intent.params.textQuery || intent.params.restaurantName,
         latitude: intent.params.latitude,
         longitude: intent.params.longitude,
         radius: intent.params.radius,
@@ -1122,87 +1157,107 @@ async function runLifestyleSearch(
         label: intent.params.textQuery || `${intent.params.cuisine || ''} ${intent.type === 'coffee_search' ? 'cafes' : 'restaurants'}`.trim(),
       });
 
-      return results.map((place: any): RichCard => ({
-        type: 'restaurant',
-        data: place,
-      }));
-    }
+      // Also search Resy for matching restaurants with time slots
+      const cards: RichCard[] = [];
+      const isRestaurantSearch = intent.type === 'restaurant_search' || intent.type === 'reservation';
 
-    // Step 3: Reservation — find the place first if needed, then book
-    if (intent.type === 'reservation') {
-      const { restaurantName, date, time, partySize } = intent.params;
-
-      if (!restaurantName) return null;
-
-      // Search for the restaurant to get its details
-      const searchRes = await fetchWithTimeout('/api/lifestyle/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          textQuery: restaurantName,
-          latitude: intent.params.latitude || buildFullLocation()?.lat,
-          longitude: intent.params.longitude || buildFullLocation()?.lng,
-          types: ['restaurant'],
-        }),
-      });
-
-      if (!searchRes.ok) return null;
-      const { results } = await searchRes.json();
-
-      if (!results?.length) return null;
-
-      const restaurant = results[0];
-
-      // If all required params present, make the reservation
-      if (date && time && partySize) {
+      if (isRestaurantSearch) {
         try {
-          const reserveRes = await fetchWithTimeout('/api/dining/reserve', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              restaurantName: restaurant.name || restaurantName,
-              restaurantPlaceId: restaurant.id,
-              restaurantEmail: restaurant.email || null,
-              restaurantPhone: restaurant.phone || null,
-              restaurantAddress: restaurant.address,
-              date,
-              time,
-              partySize,
-              specialRequests: intent.params.specialRequests || null,
-            }),
+          // Check Resy link status (cached after first check)
+          const lifestyleStore = useLifestyleStore.getState();
+          if (!lifestyleStore.resyStatus.checkedAt) {
+            await lifestyleStore.checkResyStatus();
+          }
+          const resyLinked = useLifestyleStore.getState().resyStatus.linked;
+
+          // Search Resy for venues with available slots
+          const today = new Date().toISOString().split('T')[0];
+          const resyData = await searchRestaurants({
+            query: intent.params.cuisine || intent.params.textQuery || intent.params.restaurantName || 'restaurants',
+            date: intent.params.date || today,
+            partySize: intent.params.partySize || 2,
+            timePreference: intent.params.time,
           });
 
-          if (reserveRes.ok) {
-            const reservation = await reserveRes.json();
-            emitLifestyleSignal('reservation_made', restaurantName, intent.params.cuisine);
+          if (resyData.status === 'OK' && resyData.restaurants?.length) {
+            // Build a name→resyData map for enrichment
+            const resyByName = new Map<string, ResyRestaurant>();
+            for (const rv of resyData.restaurants) {
+              resyByName.set(rv.name.toLowerCase(), rv);
+            }
 
-            return [{
-              type: 'reservationConfirmation',
-              data: {
-                reservationId: reservation.id,
-                restaurantName: restaurant.name || restaurantName,
-                restaurantAddress: restaurant.address,
-                restaurantPhone: restaurant.phone,
-                restaurantGoogleMapsUrl: restaurant.googleMapsUrl,
-                date,
-                time,
-                partySize,
-                status: reservation.status || 'saved',
-                emailSent: reservation.emailSent || false,
-              },
-            }];
+            // Enrich Google Places results with Resy venue IDs and slots
+            for (const place of results) {
+              const placeName = (place.name || '').toLowerCase();
+              const resyMatch = resyByName.get(placeName)
+                || [...resyByName.values()].find(rv =>
+                  placeName.includes(rv.name.toLowerCase()) || rv.name.toLowerCase().includes(placeName)
+                );
+
+              if (resyMatch) {
+                place.venueId = resyMatch.venueId;
+                place.slots = resyMatch.slots || [];
+                place.hasAvailability = resyMatch.hasAvailability;
+                place.neighborhood = resyMatch.neighborhood || place.neighborhood;
+                // Enrich with Resy metadata if Google didn't have it
+                if (!place.rating && resyMatch.rating) place.rating = resyMatch.rating;
+                if (!place.reviewCount && resyMatch.reviewCount) place.reviewCount = resyMatch.reviewCount;
+                if (!place.priceLevel && resyMatch.priceDisplay) place.priceLevel = resyMatch.priceDisplay;
+                if (!place.phone && resyMatch.phone) place.phone = resyMatch.phone;
+                if (!place.photoUrl && resyMatch.imageUrl) place.photoUrl = resyMatch.imageUrl;
+                if (!place.website && resyMatch.resyUrl) place.website = resyMatch.resyUrl;
+              }
+            }
+
+            // If Resy has venues not in Google results, add them
+            for (const rv of resyData.restaurants) {
+              const alreadyIncluded = results.some((p: any) =>
+                p.venueId === rv.venueId ||
+                (p.name || '').toLowerCase() === rv.name.toLowerCase()
+              );
+              if (!alreadyIncluded && rv.hasAvailability) {
+                results.push({
+                  id: `resy-${rv.venueId}`,
+                  name: rv.name,
+                  address: rv.address || `${rv.neighborhood}, ${rv.city}`,
+                  rating: rv.rating,
+                  reviewCount: rv.reviewCount,
+                  priceLevel: rv.priceDisplay || (rv.priceRange ? '$'.repeat(rv.priceRange) : null),
+                  types: rv.cuisine || [],
+                  phone: rv.phone,
+                  website: rv.resyUrl,
+                  googleMapsUrl: null,
+                  openNow: null,
+                  photoUrl: rv.imageUrl,
+                  editorialSummary: null,
+                  venueId: rv.venueId,
+                  neighborhood: rv.neighborhood,
+                  slots: rv.slots || [],
+                  hasAvailability: rv.hasAvailability,
+                });
+              }
+            }
           }
-        } catch {
-          // Reservation failed — show the restaurant card instead so user can use modal
+
+          // If Resy is NOT linked, prepend a link prompt card
+          if (!resyLinked) {
+            cards.push({ type: 'resyLink', data: {} });
+          }
+        } catch (err) {
+          console.warn('[lifestyle] Resy enrichment failed (non-blocking):', err);
         }
       }
 
-      // Missing params or reservation failed — show restaurant card, let GPT ask for details
-      return results.slice(0, 1).map((place: any): RichCard => ({
-        type: 'restaurant',
-        data: place,
-      }));
+      // Add restaurant cards
+      for (const place of results) {
+        cards.push({ type: 'restaurant', data: place });
+      }
+
+      return cards;
     }
+
+    // Note: 'reservation' intent is now handled above in the restaurant_search flow.
+    // Users see restaurant cards with Resy time slots and tap to book.
 
     return null;
   } catch (err) {
@@ -1216,6 +1271,7 @@ function emitLifestyleSignal(type: string, key: string, value?: string) {
   fetch('/api/lifestyle/observe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ type, key, value }),
   }).catch(() => {});
 }
@@ -1495,7 +1551,7 @@ export async function fetchGoogleCalendarStatus(): Promise<{
   connected: boolean;
 }> {
   try {
-    const res = await fetch('/api/calendar/google/status');
+    const res = await fetch('/api/calendar/google/status', { credentials: 'include' });
     if (!res.ok) return { configured: false, connected: false };
     return res.json();
   } catch {
@@ -1507,9 +1563,142 @@ export async function disconnectGoogleCalendar(): Promise<boolean> {
   try {
     const res = await fetch('/api/calendar/google/disconnect', {
       method: 'DELETE',
+      credentials: 'include',
     });
     return res.ok;
   } catch {
     return false;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Lifestyle booking API helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function bookLifestyle(bookingData: any, userInfo: any): Promise<{ jobId: string; status: string; bookingId: string }> {
+  const res = await fetch('/api/lifestyle/book', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ bookingData, userInfo }),
+  });
+  if (!res.ok) throw new Error('Failed to start lifestyle booking');
+  return res.json();
+}
+
+export async function getLifestyleBookingStatus(jobId: string): Promise<any> {
+  const res = await fetch(`/api/lifestyle/book/${jobId}/status`, {
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error('Failed to get booking status');
+  return res.json();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Resy direct API helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function linkResy(email: string, password: string): Promise<any> {
+  const res = await fetch('/api/lifestyle/link-resy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ email, password }),
+  });
+  return res.json();
+}
+
+export async function getResyStatus(): Promise<{ linked: boolean; hasTokens: boolean; isValid: boolean; email?: string }> {
+  const res = await fetch('/api/lifestyle/resy-status', { credentials: 'include' });
+  return res.json();
+}
+
+export interface ResySlot {
+  time: string;
+  type: string;
+  configToken: string;
+}
+
+export interface ResyRestaurant {
+  venueId: number;
+  name: string;
+  cuisine: string[];
+  neighborhood: string;
+  rating: number | null;
+  reviewCount: number | null;
+  priceRange: number | null;
+  priceDisplay: string | null;
+  imageUrl: string | null;
+  address: string;
+  city: string;
+  region: string | null;
+  phone: string | null;
+  maxPartySize: number | null;
+  resyUrl: string | null;
+  lat: number | null;
+  lng: number | null;
+  slots: ResySlot[];
+  hasAvailability: boolean;
+}
+
+export async function searchRestaurants(params: {
+  query?: string;
+  cuisine?: string;
+  date?: string;
+  partySize?: number;
+  timePreference?: string;
+}): Promise<{ status: string; restaurants: ResyRestaurant[]; location?: string; hasAuth?: boolean }> {
+  const res = await fetch('/api/lifestyle/search-restaurants', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error('Failed to search restaurants');
+  return res.json();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Hatch device control helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+export async function linkHatch(email: string, password: string): Promise<any> {
+  const res = await fetch('/api/lifestyle/link-hatch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ email, password }),
+  });
+  return res.json();
+}
+
+export async function getHatchStatus(): Promise<{ linked: boolean; devices: any[] }> {
+  const res = await fetch('/api/lifestyle/hatch-status', { credentials: 'include' });
+  return res.json();
+}
+
+export async function controlHatch(action: string, params: Record<string, any> = {}): Promise<any> {
+  const res = await fetch('/api/lifestyle/hatch/control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ action, params }),
+  });
+  return res.json();
+}
+
+export async function bookResy(params: {
+  venueId: number;
+  configToken: string;
+  date: string;
+  partySize?: number;
+  venueName?: string;
+}): Promise<any> {
+  const res = await fetch('/api/lifestyle/book-resy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(params),
+  });
+  return res.json();
 }

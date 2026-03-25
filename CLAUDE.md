@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **GirlBot** — a mobile-first AI lifestyle chat app built with React + Vite (frontend), Express (backend), and a Python booking agent sidecar. Users interact with four specialized GPT-4o-powered agents through a dark-themed UI:
 
 - **The Stylist** (`style`) — fashion, color analysis, wardrobe management, outfit rating, selfie analysis (vision)
-- **The Voyager** (`travel`) — flights (Amadeus), hotels (Amadeus + Google Places enrichment), restaurants, trip planning, flight booking (browser-use agent)
-- **The Trainer** (`fitness`) — gym/studio discovery (Google Places + Mindbody enrichment), class schedules, workout recommendations
-- **The Curator** (`lifestyle`) — general chat, reminders, daily planning, restaurant discovery/reservations (also handles `"all"` tab)
+- **The Voyager** (`travel`) — flights (Amadeus), hotels (Amadeus + Google Places enrichment), restaurants, trip planning, flight booking (browser automation)
+- **The Trainer** (`fitness`) — gym/studio discovery (Google Places + Mindbody enrichment), class schedules, fitness class booking (browser automation)
+- **The Curator** (`lifestyle`) — general chat, reminders, daily planning, restaurant discovery, lifestyle booking (Resy API + browser automation for salons/spas/nails) (also handles `"all"` tab)
 
 ## Commands
 
@@ -22,6 +22,23 @@ npm run build        # Production build to dist/
 ```
 
 No test runner or linter is configured. TypeScript has pre-existing `noImplicitAny` errors in Zustand store callbacks — these don't affect runtime (Vite uses esbuild).
+
+### Booking Agent CLI (`booking-agent/`)
+
+```bash
+# Sign into a booking platform (opens real Chrome, no automation)
+python test_booking.py --signin --user myuser --url "https://resy.com/login" --studio "Resy"
+
+# Link Resy account (API auth, no browser needed)
+python test_booking.py --link-resy --user myuser
+
+# Test fitness class booking
+python test_booking.py --type fitness --user myuser --studio "Studio Name" --website "https://studio.com"
+
+# Test lifestyle booking (restaurant/salon/spa)
+python test_booking.py --type lifestyle --user myuser --studio "Venue Name" \
+  --website "https://resy.com/cities/mia/nobu" --party-size 2 --date 2026-03-28
+```
 
 ## Required Environment Variables
 
@@ -47,16 +64,39 @@ Only `OPENAI_API_KEY` is strictly required. See `.env.example` for all options. 
 ### Backend (`server/`)
 - **Express on port 3001**, proxied from Vite dev server at `/api`
 - **Authentication**: Session-based auth middleware on all `/api/*` routes (except `/api/auth` and `/api/health`). `readSessionUserId()` extracts user from request.
-- **Database**: SQLite via better-sqlite3 (`server/data/girlbot.sqlite3`). Migrations in `server/db/migrations/` (001-013), auto-run on startup via `runMigrations()`.
+- **Database**: SQLite via better-sqlite3 (`server/data/girlbot.sqlite3`). Migrations in `server/db/migrations/` (001-015), auto-run on startup via `runMigrations()`.
 - **Agent configs** (`server/config/agents.ts`): system prompts per agent, model settings, vision support flags. `buildSystemPrompt()` injects profile placeholders (`{{STYLE_PROFILE}}`, `{{TRAVEL_PROFILE}}`, etc.)
 
 ### Booking Agent (`booking-agent/`)
-- **Python FastAPI sidecar** on port 8000
-- Uses `browser-use` + Playwright to automate flight booking on airline websites
+- **Python FastAPI sidecar** on port 8000 — handles all browser-based booking automation
+- Uses `browser-use` + Playwright to automate bookings via Chrome DevTools Protocol (CDP)
 - Express backend proxies requests via `BOOKING_AGENT_URL`
 - Job-based async: `POST /book` → returns jobId → poll `GET /status/{jobId}`
 - Safety: agent stops at payment page, never enters credit card info
-- Frontend: `FlightBookingFlow.tsx` handles passenger info form → progress tracking → result display
+
+**Three booking domains:**
+| Domain | Booker file | Endpoint | Frontend |
+|---|---|---|---|
+| Flights | `flight_booker.py` | `POST /book` | `FlightBookingFlow.tsx` |
+| Fitness | `fitness_booker.py` | `POST /book-fitness` | `FitnessClassBookingFlow.tsx` |
+| Lifestyle | `lifestyle_booker.py` | `POST /book-lifestyle` | `LifestyleBookingFlow.tsx` |
+
+**Shared infrastructure:**
+- `booking_browser.py` — shared Chrome CDP launch + browser session creation (used by fitness + lifestyle bookers)
+- `browser_profiles.py` — persistent Chrome profiles per user in `profiles/{user_id}/`
+- `auth_session.py` — tracks login state per user per domain
+- `site_memory.py` — learns navigation patterns per domain, stored in `site_profiles/`
+- `job_store.py` — async job tracking with step updates
+
+**API-first routing (`api_clients/router.py`):**
+- Lifestyle bookings check for direct API support before launching Chrome
+- Resy restaurants use `api_clients/resy_client.py` (HTTP, ~2s) instead of browser automation
+- Other platforms (OpenTable, Vagaro, Booksy, direct websites) fall through to browser automation
+
+**Sign-in flow:**
+- Users sign into booking platforms once via real Chrome (`python test_booking.py --signin`)
+- Cookies persist in `profiles/{user_id}/` and are reused for subsequent bookings
+- No automation flags during sign-in — prevents bot detection
 
 ### API Routes
 | Route prefix | File | Purpose |
@@ -65,7 +105,7 @@ Only `OPENAI_API_KEY` is strictly required. See `.env.example` for all options. 
 | `/api/style` | `style.ts` | Vision analysis, style profile, wardrobe CRUD |
 | `/api/travel` | `travel.ts` | Flight search (Amadeus), hotel search (Amadeus + Google Places), POI search, flight booking proxy |
 | `/api/fitness` | `fitness.ts` | Studio search (Google Places + Mindbody enrichment) |
-| `/api/lifestyle` | `lifestyle.ts` | Restaurant/cafe discovery, reservations |
+| `/api/lifestyle` | `lifestyle.ts` + `lifestyle-booking.ts` | Restaurant/cafe discovery, browser/API booking, Resy integration |
 | `/api/location` | `location.ts` | Shared user location management |
 | `/api/calendar` | `calendar.ts` | Google Calendar integration |
 | `/api/dining` | `dining.ts` | Restaurant reservations |
@@ -164,8 +204,28 @@ Hotels from Amadeus are enriched via `hotel-enricher.ts` with Google Places data
 - Tokens stored in DB encrypted with `GOOGLE_TOKEN_ENCRYPTION_KEY` (64-char hex)
 - Frontend never touches raw tokens; all OAuth flows go through `/api/google-auth/*`
 
-### Flight Booking Flow
-- Express proxies booking requests to Python sidecar at `BOOKING_AGENT_URL`
-- Booking state persisted in `flight_bookings` table (migration 013)
-- Frontend polls status via `GET /api/travel/book/:jobId/status` every 2s with auto-timeout at 2 minutes
-- Completed bookings can be added to Google Calendar via `POST /api/travel/book/:jobId/calendar`
+### Booking Flows (Flight, Fitness, Lifestyle)
+
+All three booking flows share the same pattern:
+1. Frontend collects user info → `POST /api/{domain}/book` → Express proxy → Python sidecar
+2. Sidecar returns `{jobId, status: "queued"}` immediately
+3. Frontend polls `GET /api/{domain}/book/:jobId/status` every 2s
+4. 4-phase modal: info → confirm → progress → result
+
+**Flight** — `flight_bookings` table (migration 013), 2min timeout, calendar integration
+**Fitness** — `fitness_bookings` table (migration 011), `booking_paths` learning (migration 014)
+**Lifestyle** — `lifestyle_bookings` table (migration 015), API-first routing (Resy ~2s via HTTP, others via browser)
+
+### Lifestyle Booking — API-First Architecture
+
+The lifestyle booker (`lifestyle_booker.py`) tries direct API calls before browser automation:
+1. `api_clients/router.py` checks if the venue domain has a direct API client (currently: `resy.com`)
+2. If API available: `resy_client.py` handles search → availability → slot details → book via HTTP (~2s)
+3. If API unavailable or returns `LOGIN_REQUIRED`: falls through to `browser-use` automation with CDP
+4. Browser automation uses 4-layer prompt (identity → navigation → site hints → result keywords)
+5. `site_memory.py` learns navigation patterns; `booking_paths` DB table stores learned steps per domain
+
+**Resy API client** (`api_clients/resy_client.py`):
+- Static API key + user JWT auth (`X-Resy-Auth-Token` / `X-Resy-Universal-Auth`)
+- Tokens persisted in `profiles/{user_id}/resy_tokens.json`
+- Endpoints: login (`POST /4/auth/password`), search (`POST /3/venuesearch/search`), find slots (`POST /4/find`), details (`POST /3/details`), book (`POST /3/book`)

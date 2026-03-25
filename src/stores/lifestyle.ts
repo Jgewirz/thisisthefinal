@@ -32,14 +32,33 @@ export interface LifestyleProfile {
   lastSearchResults: any[];
 }
 
+interface ResyStatus {
+  linked: boolean;
+  email?: string;
+  checkedAt?: string;
+}
+
+interface HatchStatus {
+  linked: boolean;
+  email?: string;
+  devices: any[];
+  checkedAt?: string;
+}
+
 interface LifestyleStore {
   profile: LifestyleProfile;
+  resyStatus: ResyStatus;
+  hatchStatus: HatchStatus;
   addRecentSearch: (search: Omit<RecentLifestyleSearch, 'id' | 'searchedAt'>) => void;
   setLastSearchResults: (results: any[]) => void;
   addFavoriteRestaurant: (restaurant: Omit<SavedRestaurant, 'id' | 'savedAt'>) => void;
   removeFavoriteRestaurant: (id: string) => void;
   addPreferredCuisine: (cuisine: string) => void;
   setPreferredPriceLevels: (levels: string[]) => void;
+  setResyStatus: (status: ResyStatus) => void;
+  checkResyStatus: () => Promise<void>;
+  setHatchStatus: (status: HatchStatus) => void;
+  checkHatchStatus: () => Promise<void>;
   hydrateFromApi: () => Promise<void>;
   resetProfile: () => void;
 }
@@ -62,6 +81,47 @@ export const useLifestyleStore = create<LifestyleStore>()(
   persist(
     (set, get) => ({
       profile: { ...defaultProfile },
+      resyStatus: { linked: false } as ResyStatus,
+      hatchStatus: { linked: false, devices: [] } as HatchStatus,
+
+      setResyStatus: (status) => set({ resyStatus: status }),
+
+      setHatchStatus: (status) => set({ hatchStatus: status }),
+
+      checkHatchStatus: async () => {
+        try {
+          const res = await fetch('/api/lifestyle/hatch-status', { credentials: 'include' });
+          if (!res.ok) return;
+          const data = await res.json();
+          set({
+            hatchStatus: {
+              linked: data.linked || false,
+              email: data.email,
+              devices: data.devices || [],
+              checkedAt: new Date().toISOString(),
+            },
+          });
+        } catch {
+          // Silent
+        }
+      },
+
+      checkResyStatus: async () => {
+        try {
+          const res = await fetch('/api/lifestyle/resy-status', { credentials: 'include' });
+          if (!res.ok) return;
+          const data = await res.json();
+          set({
+            resyStatus: {
+              linked: data.linked || data.isValid || false,
+              email: data.email,
+              checkedAt: new Date().toISOString(),
+            },
+          });
+        } catch {
+          // Silent
+        }
+      },
 
       addRecentSearch: (search) =>
         set((state) => {
@@ -124,6 +184,7 @@ export const useLifestyleStore = create<LifestyleStore>()(
           try {
             const res = await fetch('/api/lifestyle/profile', {
               headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
             });
             if (!res.ok) return;
             const { profile: apiProfile } = await res.json();

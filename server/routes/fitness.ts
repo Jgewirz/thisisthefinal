@@ -301,34 +301,74 @@ router.post('/classes', async (req: Request, res: Response) => {
       studioWebsite?: string;
       studioGoogleMapsUrl?: string;
       distance?: string;
+      userCity?: string;
+      userRegion?: string;
+    }
+
+    // Parse user city/region from search context (e.g., "Miami, FL" -> city="Miami", region="FL")
+    let userCity: string | undefined;
+    let userRegion: string | undefined;
+    if (cityName) {
+      const parts = (cityName as string).split(',').map((s: string) => s.trim());
+      userCity = parts[0] || undefined;
+      userRegion = parts[1] || undefined;
     }
 
     const allClasses: FlatClass[] = [];
 
     for (const studio of enriched) {
-      for (const cls of studio.todayClasses) {
+      if (studio.todayClasses.length > 0) {
+        // Studio has extracted class data — create a card per class
+        for (const cls of studio.todayClasses) {
+          allClasses.push({
+            classId: cls.mindbodyClassId || crypto.randomUUID(),
+            className: cls.name,
+            instructor: cls.instructor || 'TBD',
+            studioName: studio.name,
+            studioAddress: studio.address,
+            date: dateLabel,
+            time: cls.time,
+            endTime: cls.endTime,
+            duration: cls.duration || '',
+            category: cls.category || classType || 'fitness',
+            level: cls.level,
+            spotsRemaining: cls.spotsRemaining ?? null,
+            bookingPlatform: cls.bookingPlatform || (studio.scheduleSource === 'mindbody' ? 'mindbody' : studio.website ? 'website' : 'none'),
+            bookingUrl: cls.bookingUrl || studio.website || undefined,
+            mindbodySiteId: studio.mindbodySiteId,
+            mindbodyClassId: cls.mindbodyClassId,
+            studioLat: studio.lat ?? null,
+            studioLng: studio.lng ?? null,
+            studioWebsite: studio.website || undefined,
+            studioGoogleMapsUrl: studio.googleMapsUrl || undefined,
+            distance: studio.distance || undefined,
+            userCity,
+            userRegion,
+          });
+        }
+      } else if (studio.website) {
+        // No extracted classes but studio has a website — create a bookable card
+        // so the browser agent can navigate the website and find/book the class
         allClasses.push({
-          classId: cls.mindbodyClassId || crypto.randomUUID(),
-          className: cls.name,
-          instructor: cls.instructor || 'TBD',
+          classId: crypto.randomUUID(),
+          className: classType ? `${classType.charAt(0).toUpperCase() + classType.slice(1)} Class` : 'Fitness Class',
+          instructor: 'See schedule',
           studioName: studio.name,
           studioAddress: studio.address,
           date: dateLabel,
-          time: cls.time,
-          endTime: cls.endTime,
-          duration: cls.duration || '',
-          category: cls.category || classType || 'fitness',
-          level: cls.level,
-          spotsRemaining: cls.spotsRemaining ?? null,
-          bookingPlatform: cls.bookingPlatform || (studio.scheduleSource === 'mindbody' ? 'mindbody' : studio.website ? 'website' : 'none'),
-          bookingUrl: cls.bookingUrl || studio.website || undefined,
-          mindbodySiteId: studio.mindbodySiteId,
-          mindbodyClassId: cls.mindbodyClassId,
+          time: 'See schedule',
+          duration: '',
+          category: classType || 'fitness',
+          spotsRemaining: null,
+          bookingPlatform: 'website',
+          bookingUrl: studio.website,
           studioLat: studio.lat ?? null,
           studioLng: studio.lng ?? null,
-          studioWebsite: studio.website || undefined,
+          studioWebsite: studio.website,
           studioGoogleMapsUrl: studio.googleMapsUrl || undefined,
           distance: studio.distance || undefined,
+          userCity,
+          userRegion,
         });
       }
     }
@@ -547,6 +587,81 @@ router.get('/bookings', (req: Request, res: Response) => {
 // BROWSER BOOKING — browser-use agent proxy for website bookings
 // ═══════════════════════════════════════════════════════════════════════
 
+// ── Helper: extract domain from a URL ─────────────────────────────────
+function extractDomain(url: string): string {
+  try {
+    const hostname = new URL(url).hostname;
+    // Strip "www." prefix for consistency
+    return hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+// ── Helper: look up learned navigation path for a domain ──────────────
+function getLearnedPath(domain: string): any[] | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(
+      `SELECT navigation_steps, success_count, fail_count
+       FROM booking_paths
+       WHERE domain = ? AND path_type = 'fitness' AND success_count > fail_count
+       ORDER BY success_count DESC LIMIT 1`
+    ).get(domain) as any;
+
+    if (row) {
+      console.log(`[fitness/book-browser] Found learned path for ${domain} (${row.success_count} successes)`);
+      return JSON.parse(row.navigation_steps);
+    }
+  } catch (err: any) {
+    console.warn('[fitness/book-browser] Failed to look up learned path:', err.message);
+  }
+  return null;
+}
+
+// ── Helper: save or update a navigation path after a booking attempt ──
+function saveLearnedPath(domain: string, studioName: string, steps: any[], succeeded: boolean) {
+  try {
+    const db = getDb();
+    const existing = db.prepare(
+      `SELECT id, success_count, fail_count FROM booking_paths WHERE domain = ? AND path_type = 'fitness'`
+    ).get(domain) as any;
+
+    if (existing) {
+      if (succeeded) {
+        // Update with fresh steps + increment success count
+        db.prepare(
+          `UPDATE booking_paths
+           SET navigation_steps = ?, success_count = success_count + 1, last_used_at = datetime('now'), updated_at = datetime('now')
+           WHERE id = ?`
+        ).run(JSON.stringify(steps), existing.id);
+      } else {
+        // Increment fail count but don't overwrite the known-good steps
+        db.prepare(
+          `UPDATE booking_paths SET fail_count = fail_count + 1, last_used_at = datetime('now') WHERE id = ?`
+        ).run(existing.id);
+      }
+      console.log(`[fitness/book-browser] Updated path for ${domain} (success=${succeeded})`);
+    } else if (steps.length > 0) {
+      // First time — save new path regardless of success (even partial paths are useful)
+      db.prepare(
+        `INSERT INTO booking_paths (id, domain, studio_name, path_type, navigation_steps, success_count, fail_count)
+         VALUES (?, ?, ?, 'fitness', ?, ?, ?)`
+      ).run(
+        crypto.randomUUID(),
+        domain,
+        studioName,
+        JSON.stringify(steps),
+        succeeded ? 1 : 0,
+        succeeded ? 0 : 1,
+      );
+      console.log(`[fitness/book-browser] Saved new path for ${domain} (${steps.length} steps, success=${succeeded})`);
+    }
+  } catch (err: any) {
+    console.warn('[fitness/book-browser] Failed to save learned path:', err.message);
+  }
+}
+
 // ── POST /api/fitness/book-browser — trigger a browser-use booking ────
 router.post('/book-browser', async (req: Request, res: Response) => {
   const { classData, userInfo } = req.body as {
@@ -568,10 +683,41 @@ router.post('/book-browser', async (req: Request, res: Response) => {
     const userId = (req as any).userId as string;
     ensureUser(userId);
 
+    // Inject user location if not already on classData (for city/region selection on multi-location sites)
+    if (!classData.userCity) {
+      const db = getDb();
+      const userRow = db.prepare('SELECT location_city, location_region FROM users WHERE id = ?').get(userId) as any;
+      if (userRow?.location_city) {
+        classData.userCity = userRow.location_city;
+        classData.userRegion = userRow.location_region || undefined;
+      }
+    }
+
+    // Look up learned navigation path for this studio's domain
+    const siteUrl = classData.studioWebsite || classData.bookingUrl;
+    const domain = extractDomain(siteUrl);
+    const knownSteps = getLearnedPath(domain);
+
+    // Check if the user has a browser profile with a Google session
+    let hasGoogleSession = false;
+    try {
+      const profileRes = await fetch(`${BOOKING_AGENT_URL}/browser-profile/${userId}`);
+      if (profileRes.ok) {
+        const profileData = await profileRes.json() as any;
+        hasGoogleSession = profileData.hasProfile === true;
+      }
+    } catch {
+      // Agent may not be running — proceed without profile
+    }
+
     const agentRes = await fetch(`${BOOKING_AGENT_URL}/book-fitness`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ classData, userInfo }),
+      body: JSON.stringify({
+        classData,
+        userInfo: { ...userInfo, userId, hasGoogleSession },
+        knownSteps,
+      }),
     });
 
     if (!agentRes.ok) {
@@ -608,7 +754,7 @@ router.post('/book-browser', async (req: Request, res: Response) => {
       classData.studioGoogleMapsUrl || null,
     );
 
-    res.json({ jobId, status, bookingId });
+    res.json({ jobId, status, bookingId, hasLearnedPath: !!knownSteps });
   } catch (err: any) {
     console.error('Fitness browser booking error:', err.message);
     res.status(500).json({ error: 'Failed to start browser booking' });
@@ -626,16 +772,33 @@ router.get('/book-browser/:jobId/status', async (req: Request, res: Response) =>
       return;
     }
 
-    const data = await agentRes.json();
+    const data = await agentRes.json() as any;
 
     // Update local DB with latest status
     const db = getDb();
     const userId = (req as any).userId as string;
 
-    if (data.status === 'completed' && data.result?.status === 'booked') {
-      db.prepare(
-        `UPDATE fitness_bookings SET booking_status = 'confirmed' WHERE user_id = ? AND booking_platform = 'browser' AND booking_status = 'pending' ORDER BY booked_at DESC LIMIT 1`
-      ).run(userId);
+    if (data.status === 'completed') {
+      const resultStatus = data.result?.status;
+      const succeeded = resultStatus === 'booked' || resultStatus === 'already_registered';
+
+      if (resultStatus === 'booked' || resultStatus === 'already_registered') {
+        db.prepare(
+          `UPDATE fitness_bookings SET booking_status = 'confirmed' WHERE user_id = ? AND booking_platform = 'browser' AND booking_status = 'pending' ORDER BY booked_at DESC LIMIT 1`
+        ).run(userId);
+      }
+
+      // Save the learned navigation path
+      const navSteps = data.result?.navigationSteps;
+      const studioWebsite = data.result?.studioWebsite;
+      if (studioWebsite && navSteps?.length > 0) {
+        const domain = extractDomain(studioWebsite);
+        // Look up the studio name from the booking we just created
+        const booking = db.prepare(
+          `SELECT studio_name FROM fitness_bookings WHERE user_id = ? AND booking_platform = 'browser' ORDER BY booked_at DESC LIMIT 1`
+        ).get(userId) as any;
+        saveLearnedPath(domain, booking?.studio_name || domain, navSteps, succeeded);
+      }
     } else if (data.status === 'failed') {
       db.prepare(
         `UPDATE fitness_bookings SET booking_status = 'cancelled' WHERE user_id = ? AND booking_platform = 'browser' AND booking_status = 'pending' ORDER BY booked_at DESC LIMIT 1`
@@ -646,6 +809,89 @@ router.get('/book-browser/:jobId/status', async (req: Request, res: Response) =>
   } catch (err: any) {
     console.error('Fitness booking status error:', err.message);
     res.status(502).json({ error: 'Cannot reach booking agent' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// BROWSER PROFILE — persistent Google login for automated booking
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── POST /api/fitness/setup-browser — open browser for Google login ───
+router.post('/setup-browser', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId as string;
+    const db = getDb();
+    const user = db.prepare(
+      'SELECT email FROM users WHERE id = ?'
+    ).get(userId) as any;
+
+    if (!user?.email) {
+      res.status(400).json({ error: 'No email found for user. Please sign in with Google first.' });
+      return;
+    }
+
+    const agentRes = await fetch(`${BOOKING_AGENT_URL}/setup-browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, email: user.email }),
+    });
+
+    if (!agentRes.ok) {
+      res.status(502).json({ error: 'Booking agent not available' });
+      return;
+    }
+
+    const result = await agentRes.json();
+    res.json(result);
+  } catch (err: any) {
+    console.error('Setup browser error:', err.message);
+    res.status(500).json({ error: 'Failed to set up browser profile' });
+  }
+});
+
+// ── GET /api/fitness/browser-profile — check if user has a profile ────
+router.get('/browser-profile', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId as string;
+    const agentRes = await fetch(`${BOOKING_AGENT_URL}/browser-profile/${userId}`);
+
+    if (!agentRes.ok) {
+      res.json({ hasProfile: false });
+      return;
+    }
+
+    const data = await agentRes.json();
+    res.json(data);
+  } catch {
+    res.json({ hasProfile: false });
+  }
+});
+
+// ── GET /api/fitness/learned-paths — view all learned navigation paths ──
+router.get('/learned-paths', (_req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT id, domain, studio_name, success_count, fail_count, last_used_at, created_at
+       FROM booking_paths
+       WHERE path_type = 'fitness'
+       ORDER BY success_count DESC`
+    ).all() as any[];
+
+    res.json({
+      paths: rows.map((r) => ({
+        id: r.id,
+        domain: r.domain,
+        studioName: r.studio_name,
+        successCount: r.success_count,
+        failCount: r.fail_count,
+        lastUsedAt: r.last_used_at,
+        createdAt: r.created_at,
+      })),
+    });
+  } catch (err: any) {
+    console.error('List learned paths error:', err.message);
+    res.status(500).json({ error: 'Failed to list learned paths' });
   }
 });
 

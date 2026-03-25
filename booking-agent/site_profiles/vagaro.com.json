@@ -1,0 +1,31 @@
+{
+  "domain": "vagaro.com",
+  "studio_name": "Vagaro",
+  "platform_type": "react-spa",
+  "booking_url": "https://www.vagaro.com/",
+  "auth_method": "email-password",
+  "schedule_description": "Salon/spa pages list available services. Select a service type → optionally pick a stylist → choose date from calendar → select time slot → fill client info → confirm.",
+  "schedule_url": "",
+  "flow_steps": [
+    "Navigate to the salon/spa page on vagaro.com",
+    "Browse the service menu and select the desired service",
+    "Optionally select a preferred stylist/provider",
+    "Navigate the calendar to the target date",
+    "Select an available time slot",
+    "Fill in client name, email, phone",
+    "Review the booking summary",
+    "Click 'Book' or 'Confirm Appointment'",
+    "Wait for the confirmation page"
+  ],
+  "obstacles": [
+    "Cookie consent popup may appear — dismiss it",
+    "Some salons require a Vagaro account to book — report LOGIN_REQUIRED",
+    "Service menu may have many categories — look for the most relevant one",
+    "Calendar may default to the current week — navigate forward to the target date",
+    "Some services have different durations and prices — pick the standard option",
+    "If the salon requires a deposit, report PAYMENT_REQUIRED",
+    "The 'Book' button may be disabled until all required fields are filled"
+  ],
+  "confidence": 0.6,
+  "last_updated": "2026-03-24"
+}

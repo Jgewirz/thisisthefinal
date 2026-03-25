@@ -1,5 +1,5 @@
-import { Link, useLocation } from 'react-router';
-import { Grid3x3, Palette, Plane, Dumbbell, Coffee, Bookmark, CalendarDays, Settings, User, LogOut, LogIn } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router';
+import { Grid3x3, Palette, Plane, Dumbbell, Coffee, Bookmark, CalendarDays, Settings, Link2, User, LogOut, LogIn } from 'lucide-react';
 import { navItems } from '../types';
 import { useUserStore } from '../../stores/user';
 import { loginWithGoogle } from '../../lib/session';
@@ -12,6 +12,7 @@ const iconMap: Record<string, React.ComponentType<any>> = {
   Coffee,
   Bookmark,
   CalendarDays,
+  Link2,
 };
 
 export function Sidebar() {
@@ -24,6 +25,7 @@ export function Sidebar() {
     return path.slice(1); // e.g. "/calendar" → "calendar", "/style" → "style"
   };
 
+  const navigate = useNavigate();
   const activeId = getActiveId(location.pathname);
   const isGoogleUser = user?.provider === 'google';
 
@@ -99,14 +101,18 @@ export function Sidebar() {
       {/* Bottom utilities */}
       <div className="py-4 space-y-1">
         <button
+          onClick={() => navigate('/accounts')}
           className="relative flex items-center h-12 w-full lg:mx-2 lg:rounded-lg transition-colors hover:bg-opacity-50"
-          style={{ backgroundColor: 'transparent' }}
+          style={{ backgroundColor: activeId === 'accounts' ? 'var(--bg-surface-elevated)' : 'transparent' }}
         >
           <div className="w-14 flex items-center justify-center">
-            <Settings size={20} style={{ color: 'var(--text-secondary)' }} />
+            <Link2 size={20} style={{ color: activeId === 'accounts' ? 'var(--accent-global)' : 'var(--text-secondary)' }} />
           </div>
-          <span className="hidden lg:block font-medium" style={{ color: 'var(--text-secondary)' }}>
-            Settings
+          <span
+            className="hidden lg:block font-medium"
+            style={{ color: activeId === 'accounts' ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+          >
+            Accounts
           </span>
         </button>
 

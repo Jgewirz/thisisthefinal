@@ -1,0 +1,32 @@
+{
+  "domain": "corepoweryoga.com",
+  "studio_name": "CorePower Yoga",
+  "platform_type": "custom",
+  "booking_url": "https://www.corepoweryoga.com/yoga-schedules/studio",
+  "auth_method": "email-password",
+  "schedule_description": "The schedule page allows users to select a studio location and view available classes for specific dates.",
+  "schedule_url": "https://www.corepoweryoga.com/yoga-schedules/studio",
+  "flow_steps": [],
+  "obstacles": [
+    "Failed to sign in due to unrecognized email, requiring account creation.",
+    "Multiple attempts to fill in the account creation form failed due to input issues."
+  ],
+  "tips": [
+    "Ensure correct input when creating an account to avoid multiple retries.",
+    "Familiarize yourself with the layout of the schedule page to navigate quickly."
+  ],
+  "class_types_observed": [],
+  "has_location_picker": true,
+  "has_spot_selection": false,
+  "confidence": 0.05,
+  "visit_count": 1,
+  "success_count": 0,
+  "fail_count": 1,
+  "last_visited": "2026-03-24T21:53:25Z",
+  "created_at": "2026-03-24T21:53:17Z",
+  "best_steps_to_schedule": 7,
+  "avg_steps_to_schedule": 7.0,
+  "steps_history": [
+    7
+  ]
+}

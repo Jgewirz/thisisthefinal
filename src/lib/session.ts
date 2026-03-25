@@ -15,6 +15,7 @@ export async function ensureSession(): Promise<void> {
     headers: {
       'Content-Type': 'application/json',
     },
+    credentials: 'include',
     body: JSON.stringify({}),
   });
 

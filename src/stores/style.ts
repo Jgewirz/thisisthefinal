@@ -93,6 +93,7 @@ export const useStyleStore = create<StyleStore>()(
             headers: {
               'Content-Type': 'application/json',
             },
+            credentials: 'include',
             body: JSON.stringify({
               image: base64,
               ...metadata,
@@ -119,7 +120,7 @@ export const useStyleStore = create<StyleStore>()(
 
       loadWardrobe: async () => {
         try {
-          const res = await fetch('/api/style/wardrobe');
+          const res = await fetch('/api/style/wardrobe', { credentials: 'include' });
           if (!res.ok) return;
           const { items } = await res.json();
 
@@ -148,6 +149,7 @@ export const useStyleStore = create<StyleStore>()(
             headers: {
               'Content-Type': 'application/json',
             },
+            credentials: 'include',
             body: JSON.stringify({ items }),
           });
 
@@ -166,6 +168,7 @@ export const useStyleStore = create<StyleStore>()(
         try {
           await fetch(`/api/style/wardrobe/${id}`, {
             method: 'DELETE',
+            credentials: 'include',
           });
         } catch {
           // Continue with local removal even if server fails
@@ -206,6 +209,7 @@ export const useStyleStore = create<StyleStore>()(
             headers: {
               'Content-Type': 'application/json',
             },
+            credentials: 'include',
             body: JSON.stringify({ profile }),
           });
         } catch {

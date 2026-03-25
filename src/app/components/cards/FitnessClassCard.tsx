@@ -1,4 +1,4 @@
-import { Clock, MapPin, User, Users, Bookmark, ExternalLink, Dumbbell, Check, Globe } from 'lucide-react';
+import { Clock, MapPin, User, Users, Bookmark, ExternalLink, Dumbbell, Check } from 'lucide-react';
 
 export interface FitnessClassCardData {
   classId: number | string;
@@ -30,6 +30,9 @@ export interface FitnessClassCardData {
   mindbodyClassId?: string;
   studioWebsite?: string;
   studioGoogleMapsUrl?: string;
+  // User location context (for booking agent city/region selection)
+  userCity?: string;
+  userRegion?: string;
 }
 
 interface FitnessClassCardProps {
@@ -40,7 +43,6 @@ interface FitnessClassCardProps {
   onSchedule?: (data: FitnessClassCardData) => void;
   onBookmark?: (data: FitnessClassCardData) => void;
   onBook?: (data: FitnessClassCardData) => void;
-  onBookBrowser?: (data: FitnessClassCardData) => void;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -75,7 +77,6 @@ export function FitnessClassCard({
   onSchedule,
   onBookmark,
   onBook,
-  onBookBrowser,
 }: FitnessClassCardProps) {
   const effectiveStatus = isBooked ? 'booked' : data.bookingStatus;
   const status = STATUS_CONFIG[effectiveStatus] || STATUS_CONFIG.available;
@@ -224,7 +225,7 @@ export function FitnessClassCard({
 
         {/* Action buttons */}
         <div className="flex gap-2 pt-1">
-          {/* Book button — in-app or external */}
+          {/* Primary Book button */}
           {isBooked ? (
             <div
               className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-full text-sm font-medium"
@@ -244,7 +245,7 @@ export function FitnessClassCard({
               }}
             >
               <Dumbbell size={14} />
-              {data.bookingPlatform === 'website' ? 'Add to Schedule' : 'Book Class'}
+              Book Class
             </button>
           ) : (
             <a
@@ -262,24 +263,6 @@ export function FitnessClassCard({
               <ExternalLink size={14} />
               Book
             </a>
-          )}
-
-          {/* Browser booking button — for website-based studios */}
-          {onBookBrowser && !isBooked && data.bookingPlatform === 'website' && (data.studioWebsite || data.bookingUrl) && (
-            <button
-              onClick={() => onBookBrowser(data)}
-              disabled={data.bookingStatus === 'canceled' || data.bookingStatus === 'full'}
-              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-sm font-medium border transition-opacity hover:opacity-90 disabled:opacity-50"
-              style={{
-                borderColor: agentColor + '40',
-                color: agentColor,
-                backgroundColor: 'transparent',
-              }}
-              title="Book via automated browser"
-            >
-              <Globe size={14} />
-              Auto-Book
-            </button>
           )}
 
           {/* Schedule / Save button */}

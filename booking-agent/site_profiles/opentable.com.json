@@ -1,0 +1,31 @@
+{
+  "domain": "opentable.com",
+  "studio_name": "OpenTable",
+  "platform_type": "react-spa",
+  "booking_url": "https://www.opentable.com/",
+  "auth_method": "email-password",
+  "schedule_description": "Restaurant pages have a top-of-page reservation widget with date, time, and party size selectors. Click 'Find a Table' to see available slots, then select one and fill in guest details.",
+  "schedule_url": "",
+  "flow_steps": [
+    "Navigate to the restaurant page on opentable.com",
+    "Set party size, date, and time in the reservation widget at the top",
+    "Click 'Find a Table' button",
+    "Select an available time slot from the results",
+    "Fill in first name, last name, email, phone on the booking form",
+    "Add special requests or occasion in the notes field",
+    "Check any required checkboxes (terms, marketing opt-out)",
+    "Click 'Complete Reservation'",
+    "Wait for the confirmation page"
+  ],
+  "obstacles": [
+    "Cookie consent and newsletter popups may appear — dismiss them",
+    "Some restaurants are 'OpenTable exclusive' and require an account",
+    "The 'Find a Table' button may show 'No availability' — try different times",
+    "After clicking a time slot, a new form loads — wait for it",
+    "Phone number field may have country code selector — set to +1 for US",
+    "If asked to sign in, report LOGIN_REQUIRED with the login URL",
+    "Some restaurants require prepayment — report PAYMENT_REQUIRED"
+  ],
+  "confidence": 0.7,
+  "last_updated": "2026-03-24"
+}

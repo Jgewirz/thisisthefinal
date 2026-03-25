@@ -1,4 +1,4 @@
-import { Search, MoreVertical, Loader2, ImageIcon, UserCircle } from 'lucide-react';
+import { Search, MoreVertical, Loader2, ImageIcon, UserCircle, UtensilsCrossed, Check } from 'lucide-react';
 import { AgentId, agents, Message } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
@@ -6,9 +6,13 @@ import { StyleProfilePanel } from './StyleProfilePanel';
 import { ReservationModal, type ReservationFormData } from './ReservationModal';
 import { FlightBookingFlow } from './FlightBookingFlow';
 import { FitnessClassBookingFlow } from './FitnessClassBookingFlow';
-import type { RestaurantCardData } from './cards/RestaurantCard';
+import { LifestyleBookingFlow } from './LifestyleBookingFlow';
+import { ResyBookingConfirmation } from './ResyBookingConfirmation';
+import { ResyLinkForm } from './ResyLinkForm';
+import type { RestaurantCardData, ResySlotData } from './cards/RestaurantCard';
 import { useChatStore } from '../../stores/chat';
 import { useFitnessStore } from '../../stores/fitness';
+import { useLifestyleStore } from '../../stores/lifestyle';
 import { useMemo, useRef, useEffect, useState } from 'react';
 import { sendMessage } from '../../lib/api';
 
@@ -24,6 +28,21 @@ export function ChatView({ agentId }: ChatViewProps) {
   const [reservationRestaurant, setReservationRestaurant] = useState<RestaurantCardData | null>(null);
   const [bookingFlight, setBookingFlight] = useState<any>(null);
   const [bookingFitnessClass, setBookingFitnessClass] = useState<any>(null);
+  const [bookingLifestyle, setBookingLifestyle] = useState<any>(null);
+  const [resyConfirmation, setResyConfirmation] = useState<{
+    venueName: string; venueId: number; configToken: string;
+    date: string; time: string; seatingType: string; partySize: number;
+  } | null>(null);
+  const [showResyLink, setShowResyLink] = useState(false);
+  const resyLinked = useLifestyleStore((s) => s.resyStatus.linked);
+  const isLifestyleAgent = agentId === 'lifestyle' || agentId === 'all';
+
+  // Check Resy status on mount for lifestyle agent
+  useEffect(() => {
+    if (isLifestyleAgent) {
+      useLifestyleStore.getState().checkResyStatus();
+    }
+  }, [isLifestyleAgent]);
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -72,11 +91,26 @@ export function ChatView({ agentId }: ChatViewProps) {
     setReservationRestaurant(restaurantData);
   };
 
+  const handleSelectResySlot = (slot: ResySlotData & { venueId: number; venueName: string }) => {
+    // Extract the date from the time string ("2026-03-28 19:30:00" → "2026-03-28")
+    const datePart = slot.time.split(' ')[0] || '';
+    setResyConfirmation({
+      venueName: slot.venueName,
+      venueId: slot.venueId,
+      configToken: slot.configToken,
+      date: datePart,
+      time: slot.time,
+      seatingType: slot.type || 'Dining Room',
+      partySize: 2, // Default, could be passed through
+    });
+  };
+
   const handleReservationSubmit = async (formData: ReservationFormData) => {
     try {
       const res = await fetch('/api/dining/reserve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(formData),
       });
 
@@ -124,6 +158,24 @@ export function ChatView({ agentId }: ChatViewProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {isLifestyleAgent && (
+            <button
+              onClick={() => {
+                if (!resyLinked) {
+                  setShowResyLink(true);
+                }
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{
+                backgroundColor: resyLinked ? 'var(--success)' + '15' : 'var(--accent-lifestyle)' + '15',
+                color: resyLinked ? 'var(--success)' : 'var(--accent-lifestyle)',
+              }}
+              title={resyLinked ? 'Resy connected' : 'Connect Resy to book restaurants'}
+            >
+              {resyLinked ? <Check size={13} /> : <UtensilsCrossed size={13} />}
+              {resyLinked ? 'Resy' : 'Link Resy'}
+            </button>
+          )}
           {agentId === 'style' && (
             <button
               onClick={() => setProfileOpen(true)}
@@ -212,6 +264,8 @@ export function ChatView({ agentId }: ChatViewProps) {
                       onReserve={handleReserve}
                       onBookFlight={(flightData) => setBookingFlight(flightData)}
                       onBookFitnessClass={(classData) => setBookingFitnessClass(classData)}
+                      onBookLifestyle={(data) => setBookingLifestyle(data)}
+                      onSelectResySlot={handleSelectResySlot}
                     />
                   ))}
                 </div>
@@ -334,7 +388,7 @@ export function ChatView({ agentId }: ChatViewProps) {
                     time: bookingFitnessClass.time,
                     duration: bookingFitnessClass.duration,
                     category: bookingFitnessClass.category,
-                    bookingPlatform: 'website',
+                    bookingPlatform: 'browser',
                     bookingStatus: 'confirmed',
                     bookingUrl: bookingFitnessClass.studioWebsite || bookingFitnessClass.bookingUrl,
                     studioGoogleMapsUrl: bookingFitnessClass.studioGoogleMapsUrl,
@@ -343,11 +397,110 @@ export function ChatView({ agentId }: ChatViewProps) {
               });
 
               // Also update fitness store
-              useFitnessStore.getState().bookClass(bookingFitnessClass, 'website');
+              useFitnessStore.getState().bookClass(bookingFitnessClass, 'browser');
             }
             setBookingFitnessClass(null);
           }}
         />
+      )}
+
+      {/* Lifestyle Booking Flow (restaurants, salons, spas — browser automation) */}
+      {bookingLifestyle && (
+        <LifestyleBookingFlow
+          bookingData={bookingLifestyle}
+          onClose={() => setBookingLifestyle(null)}
+          onComplete={(result) => {
+            if (result?.status === 'booked') {
+              useChatStore.getState().addMessage(agentId, {
+                id: crypto.randomUUID(),
+                type: 'bot',
+                text: '',
+                timestamp: new Date(),
+                agentId,
+                richCard: {
+                  type: 'reservationConfirmation',
+                  data: {
+                    reservationId: crypto.randomUUID(),
+                    restaurantName: bookingLifestyle.venueName,
+                    restaurantAddress: bookingLifestyle.venueAddress,
+                    date: bookingLifestyle.date,
+                    time: bookingLifestyle.time,
+                    partySize: bookingLifestyle.partySize,
+                    status: 'confirmed',
+                    bookingPlatform: 'browser',
+                  },
+                },
+              });
+            }
+            setBookingLifestyle(null);
+          }}
+        />
+      )}
+
+      {/* Resy inline confirmation (slot tap → confirm → done) */}
+      {resyConfirmation && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
+          onClick={() => setResyConfirmation(null)}
+        >
+          <div className="w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <ResyBookingConfirmation
+              {...resyConfirmation}
+              onConfirm={(result) => {
+                // Add confirmation card to chat
+                useChatStore.getState().addMessage(agentId, {
+                  id: crypto.randomUUID(),
+                  type: 'bot',
+                  text: `Booked! ${resyConfirmation.venueName} — ${result.time || resyConfirmation.time}, ${resyConfirmation.partySize} guests. Confirmation: ${result.confirmation_id || result.reservation_id || ''}`,
+                  timestamp: new Date(),
+                  agentId,
+                  richCard: {
+                    type: 'reservationConfirmation',
+                    data: {
+                      reservationId: result.bookingId || result.confirmation_id || crypto.randomUUID(),
+                      restaurantName: resyConfirmation.venueName,
+                      date: resyConfirmation.date,
+                      time: result.time || resyConfirmation.time,
+                      partySize: resyConfirmation.partySize,
+                      confirmationCode: result.confirmation_id || '',
+                      status: 'confirmed',
+                      bookingPlatform: 'resy',
+                    },
+                  },
+                });
+                setResyConfirmation(null);
+              }}
+              onCancel={() => setResyConfirmation(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Resy link form (shown when user needs to connect account) */}
+      {showResyLink && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
+          onClick={() => setShowResyLink(false)}
+        >
+          <div className="w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <ResyLinkForm
+              onLinked={(email) => {
+                setShowResyLink(false);
+                useLifestyleStore.getState().setResyStatus({ linked: true, email, checkedAt: new Date().toISOString() });
+                useChatStore.getState().addMessage(agentId, {
+                  id: crypto.randomUUID(),
+                  type: 'bot',
+                  text: `Resy connected with ${email}! You can now book restaurants directly. Try "find me dinner tonight" to get started.`,
+                  timestamp: new Date(),
+                  agentId,
+                });
+              }}
+              onCancel={() => setShowResyLink(false)}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

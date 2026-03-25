@@ -1,0 +1,28 @@
+{
+  "domain": "booksy.com",
+  "studio_name": "Booksy",
+  "platform_type": "react-spa",
+  "booking_url": "https://booksy.com/",
+  "auth_method": "email-password",
+  "schedule_description": "Similar to Vagaro. Salon/barber pages list services. Select service → pick provider → choose date → select time slot → fill info → confirm.",
+  "schedule_url": "",
+  "flow_steps": [
+    "Navigate to the salon/barber page on booksy.com",
+    "Browse the service list and select the desired service",
+    "Pick a provider/stylist if prompted",
+    "Select a date from the calendar",
+    "Choose an available time slot",
+    "Fill in name, email, phone",
+    "Click 'Book' or 'Confirm'",
+    "Wait for the confirmation page"
+  ],
+  "obstacles": [
+    "Booksy may require an account to complete booking — report LOGIN_REQUIRED",
+    "Service list may be long — scroll to find the right category",
+    "Some providers may have limited availability — try 'Any available'",
+    "If prepayment is required, report PAYMENT_REQUIRED",
+    "Mobile-first layout — some elements may be hidden behind scroll"
+  ],
+  "confidence": 0.5,
+  "last_updated": "2026-03-24"
+}

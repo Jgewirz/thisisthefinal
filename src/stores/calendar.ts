@@ -90,6 +90,7 @@ export const useCalendarStore = create<CalendarStore>()(
           const res = await fetch('/api/calendar/tasks', {
             method: 'POST',
             headers: apiHeaders(),
+            credentials: 'include',
             body: JSON.stringify({
               title: task.title,
               description: task.description,
@@ -127,6 +128,7 @@ export const useCalendarStore = create<CalendarStore>()(
           await fetch(`/api/calendar/tasks/${id}`, {
             method: 'PUT',
             headers: apiHeaders(),
+            credentials: 'include',
             body: JSON.stringify(updates),
           });
         } catch {
@@ -141,6 +143,7 @@ export const useCalendarStore = create<CalendarStore>()(
           await fetch(`/api/calendar/tasks/${id}`, {
             method: 'DELETE',
             headers: apiHeaders(),
+            credentials: 'include',
           });
         } catch {
           // Already removed locally
@@ -166,6 +169,7 @@ export const useCalendarStore = create<CalendarStore>()(
           await fetch(`/api/calendar/tasks/${id}/toggle`, {
             method: 'PATCH',
             headers: apiHeaders(),
+            credentials: 'include',
           });
         } catch {
           // Keep optimistic toggle
@@ -184,6 +188,7 @@ export const useCalendarStore = create<CalendarStore>()(
         try {
           const res = await fetch(`/api/calendar/events?from=${from}&to=${to}`, {
             headers: apiHeaders(),
+            credentials: 'include',
           });
           if (res.ok) {
             const { events } = await res.json();
@@ -200,6 +205,7 @@ export const useCalendarStore = create<CalendarStore>()(
         try {
           const res = await fetch('/api/calendar/google/status', {
             headers: apiHeaders(),
+            credentials: 'include',
           });
           if (res.ok) {
             const data = await res.json();
@@ -226,7 +232,7 @@ export const useCalendarStore = create<CalendarStore>()(
 
           // Also hydrate tasks list
           try {
-            const res = await fetch('/api/calendar/tasks', { headers: apiHeaders() });
+            const res = await fetch('/api/calendar/tasks', { headers: apiHeaders(), credentials: 'include' });
             if (res.ok) {
               const { tasks } = await res.json();
               set({ tasks });

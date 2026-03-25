@@ -3,6 +3,7 @@ import { Root } from "./components/Root";
 import { ChatView } from "./components/ChatView";
 import { SavedFlightsView } from "./components/SavedFlightsView";
 import { CalendarView } from "./components/CalendarView";
+import { AccountsView } from "./components/AccountsView";
 
 export const router = createBrowserRouter([
   {
@@ -36,6 +37,10 @@ export const router = createBrowserRouter([
       {
         path: "calendar",
         Component: CalendarView,
+      },
+      {
+        path: "accounts",
+        Component: AccountsView,
       },
     ],
   },

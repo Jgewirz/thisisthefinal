@@ -282,7 +282,7 @@ export interface FitnessIntent {
 // ── Lifestyle intent extraction ──────────────────────────────────────
 
 export interface LifestyleIntent {
-  type: 'restaurant_search' | 'coffee_search' | 'reservation' | 'recommendation' | 'none';
+  type: 'restaurant_search' | 'coffee_search' | 'reservation' | 'recommendation' | 'hatch_control' | 'none';
   params: Record<string, any>;
 }
 
@@ -314,11 +314,22 @@ For restaurant searches:
 For coffee/cafe searches:
 {"type":"coffee_search","params":{"textQuery":"best oat milk lattes near me","latitude":30.27,"longitude":-97.74,"cityName":"Austin","types":["cafe"]}}
 
-For reservations (user wants to book a specific restaurant):
-{"type":"reservation","params":{"restaurantName":"Nobu","date":"${today}","time":"19:00","partySize":2,"specialRequests":null}}
+For reservations at a specific named restaurant:
+{"type":"reservation","params":{"restaurantName":"Nobu","textQuery":"Nobu","cuisine":null,"date":"${today}","time":"19:00","partySize":2,"specialRequests":null}}
+
+For reservations by cuisine or type (no specific restaurant named):
+{"type":"reservation","params":{"restaurantName":null,"textQuery":"greek restaurants","cuisine":"greek","date":"${today}","time":"19:00","partySize":4,"specialRequests":null}}
 
 For general recommendations (what to do, date night ideas, etc.):
 {"type":"recommendation","params":{"query":"date night ideas","category":"dining","timeOfDay":"evening"}}
+
+For Hatch device control:
+{"type":"hatch_control","params":{"action":"set_sound","sound":"ocean","volume":50}}
+{"type":"hatch_control","params":{"action":"set_brightness","brightness":20}}
+{"type":"hatch_control","params":{"action":"turn_off"}}
+{"type":"hatch_control","params":{"action":"set_color","r":255,"g":150,"b":50,"brightness":40}}
+{"type":"hatch_control","params":{"action":"turn_on"}}
+{"type":"hatch_control","params":{"action":"set_volume","volume":30}}
 
 For non-lifestyle-search messages:
 {"type":"none","params":{}}
@@ -326,9 +337,10 @@ For non-lifestyle-search messages:
 Rules:
 - "restaurant_search": user wants to find/discover restaurants or dining spots. Signals: "find", "search", "show me", "recommend", "where", "best", "near me" + restaurant/dining/food/cuisine terms
 - "coffee_search": user wants to find cafes or coffee shops. Signals: coffee, cafe, latte, espresso, tea + search terms
-- "reservation": user explicitly wants to BOOK a table at a named restaurant. Signals: "book", "reserve", "reservation", "table for". Extract: restaurantName, date, time, partySize. Parse relative dates ("Friday" → next Friday, "tomorrow" → tomorrow's date). Parse "7pm" → "19:00".
+- "reservation": user explicitly wants to BOOK a table. Signals: "book", "reserve", "reservation", "table for". ALWAYS extract: date, time, partySize, and ALSO textQuery and cuisine (for search). Parse relative dates ("Friday" → next Friday, "tomorrow" → tomorrow's date). Parse "7pm" → "19:00". If user names a specific restaurant set restaurantName + textQuery to it. If user specifies a cuisine/type instead (e.g. "greek for 4"), set cuisine and textQuery but leave restaurantName null.
+- "hatch_control": user wants to control their Hatch sound machine/alarm clock. Signals: "hatch", "alarm", "sound machine", "white noise", "sleep sounds", "night light" + action terms ("turn on", "set to", "play", "dim", "brighten", "volume"). Extract action and relevant params. Actions: "set_sound" (with sound name + optional volume), "set_volume" (with volume 0-100), "set_brightness" (with brightness 0-100), "set_color" (with r,g,b + optional brightness), "turn_on", "turn_off". Common sounds: white noise, pink noise, brown noise, ocean, rain, wind, birds, crickets, thunderstorm, stream, heartbeat.
 - "recommendation": user asks open-ended lifestyle questions like "what should I do tonight", "date night ideas", "any suggestions for brunch". These are NOT searches for specific places — they want advice/ideas.
-- Return "none" for: general chat, reminders, planning, productivity, wellness advice, or anything not clearly a place search or reservation
+- Return "none" for: general chat, reminders, planning, productivity, wellness advice, or anything not clearly a place search, reservation, or device control
 - IMPORTANT: Do NOT extract intent for travel bookings (flights/hotels), fitness classes, or fashion — those belong to other agents
 - For follow-up messages refining a previous search, look at conversation context${locationRules}`;
 

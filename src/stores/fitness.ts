@@ -14,6 +14,7 @@ async function apiPost(path: string, body: object) {
     const res = await fetch(`/api/fitness${path}`, {
       method: 'POST',
       headers: apiHeaders(),
+      credentials: 'include',
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -30,6 +31,7 @@ async function apiDelete(path: string) {
     await fetch(`/api/fitness${path}`, {
       method: 'DELETE',
       headers: apiHeaders(),
+      credentials: 'include',
     });
   } catch {
     // Silent

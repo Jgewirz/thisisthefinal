@@ -70,7 +70,10 @@ export type RichCardType =
   | 'cheapestDates'
   | 'bookingConfirmation'
   | 'flightBookingConfirmation'
-  | 'reservationConfirmation';
+  | 'reservationConfirmation'
+  | 'resyLink'
+  | 'hatchLink'
+  | 'hatchControl';
 
 export interface RichCard {
   type: RichCardType;
@@ -108,5 +111,12 @@ export const navItems: NavItem[] = [
     icon: 'CalendarDays',
     color: 'var(--accent-calendar)',
     path: '/calendar',
+  },
+  {
+    id: 'accounts',
+    name: 'Accounts',
+    icon: 'Link2',
+    color: 'var(--accent-global)',
+    path: '/accounts',
   },
 ];

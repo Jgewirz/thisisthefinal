@@ -129,7 +129,7 @@ export const useChatStore = create<ChatStore>()(
 
         chatHydrationPromise = (async () => {
           try {
-            const res = await fetch('/api/chat/history');
+            const res = await fetch('/api/chat/history', { credentials: 'include' });
             if (!res.ok) return;
 
             const { history } = await res.json();
@@ -179,6 +179,7 @@ export const useChatStore = create<ChatStore>()(
             headers: {
               'Content-Type': 'application/json',
             },
+            credentials: 'include',
             body: JSON.stringify({ messages }),
           });
         } catch {

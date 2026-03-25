@@ -3,8 +3,12 @@ import crypto from 'crypto';
 import { extractLifestyleParams } from '../services/openai.js';
 import { searchPlaces, isGooglePlacesConfigured } from '../services/google-places.js';
 import { getDb } from '../db/sqlite.js';
+import lifestyleBookingRouter from './lifestyle-booking.js';
 
 const router = Router();
+
+// Mount lifestyle booking sub-routes (book, book/:jobId/status, bookings, etc.)
+router.use('/', lifestyleBookingRouter);
 
 function ensureUser(userId: string) {
   const db = getDb();

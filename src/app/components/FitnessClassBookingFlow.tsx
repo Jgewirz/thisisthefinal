@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, Dumbbell, Loader2, Check, ExternalLink, CalendarPlus, AlertCircle, Chrome } from 'lucide-react';
+import { useUserStore } from '../../stores/user';
 
 interface UserInfo {
   firstName: string;
@@ -19,23 +20,33 @@ interface FitnessClassBookingFlowProps {
   classData: any;
   onClose: () => void;
   onComplete: (result: any) => void;
-  prefillEmail?: string;
-  prefillName?: string;
 }
 
 export function FitnessClassBookingFlow({
   classData,
   onClose,
   onComplete,
-  prefillEmail,
-  prefillName,
 }: FitnessClassBookingFlowProps) {
-  const [phase, setPhase] = useState<'info' | 'progress' | 'result'>('info');
+  const user = useUserStore((s) => s.user);
+
+  // Auto-fill from user store
+  const nameParts = (user?.displayName || '').split(' ');
+  const autoFirstName = nameParts[0] || '';
+  const autoLastName = nameParts.slice(1).join(' ') || '';
+  const autoEmail = user?.email || '';
+  const isGoogleUser = user?.provider === 'google';
+
+  // If we have user info from Google, skip straight to confirm phase
+  const hasAutoInfo = !!(autoFirstName && autoEmail);
+
+  const [phase, setPhase] = useState<'info' | 'confirm' | 'progress' | 'result'>(
+    hasAutoInfo ? 'confirm' : 'info'
+  );
   const [userInfo, setUserInfo] = useState<UserInfo>({
-    firstName: prefillName?.split(' ')[0] || '',
-    lastName: prefillName?.split(' ').slice(1).join(' ') || '',
-    email: prefillEmail || '',
-    useGoogleLogin: true,
+    firstName: autoFirstName,
+    lastName: autoLastName,
+    email: autoEmail,
+    useGoogleLogin: isGoogleUser,
   });
   const [jobId, setJobId] = useState<string | null>(null);
   const [steps, setSteps] = useState<BookingStep[]>([]);
@@ -43,13 +54,41 @@ export function FitnessClassBookingFlow({
   const [status, setStatus] = useState<string>('queued');
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasGoogleProfile, setHasGoogleProfile] = useState<boolean | null>(null);
+  const [settingUpBrowser, setSettingUpBrowser] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Check if user has a browser profile on mount
+  useEffect(() => {
+    fetch('/api/fitness/browser-profile', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((data) => setHasGoogleProfile(data.hasProfile === true))
+      .catch(() => setHasGoogleProfile(false));
+  }, []);
 
   useEffect(() => {
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
     };
   }, []);
+
+  const setupBrowserProfile = async () => {
+    setSettingUpBrowser(true);
+    try {
+      const res = await fetch('/api/fitness/setup-browser', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (data.success) {
+        setHasGoogleProfile(true);
+      }
+    } catch {
+      // Setup failed silently
+    }
+    setSettingUpBrowser(false);
+  };
 
   const startBooking = async () => {
     if (!userInfo.firstName || !userInfo.lastName || !userInfo.email) return;
@@ -61,6 +100,7 @@ export function FitnessClassBookingFlow({
       const res = await fetch('/api/fitness/book-browser', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ classData, userInfo }),
       });
 
@@ -71,7 +111,7 @@ export function FitnessClassBookingFlow({
 
       pollingRef.current = setInterval(async () => {
         try {
-          const statusRes = await fetch(`/api/fitness/book-browser/${data.jobId}/status`);
+          const statusRes = await fetch(`/api/fitness/book-browser/${data.jobId}/status`, { credentials: 'include' });
           if (!statusRes.ok) return;
 
           const statusData = await statusRes.json();
@@ -95,7 +135,7 @@ export function FitnessClassBookingFlow({
         }
       }, 2000);
 
-      // Stop polling after 2.5 minutes max (fitness may take longer)
+      // Stop polling after 3.5 minutes max (SoulCycle multi-step flow needs time)
       setTimeout(() => {
         if (pollingRef.current) {
           clearInterval(pollingRef.current);
@@ -105,7 +145,7 @@ export function FitnessClassBookingFlow({
             setPhase('result');
           }
         }
-      }, 150000);
+      }, 330000); // 5.5 min -- matches 300s backend timeout + polling overhead
     } catch (err: any) {
       setError(err.message || 'Failed to start booking');
       setPhase('result');
@@ -173,7 +213,103 @@ export function FitnessClassBookingFlow({
           </div>
         </div>
 
-        {/* ── Phase 1: User Info ── */}
+        {/* ── Phase: Confirm (auto-filled, quick confirmation) ── */}
+        {phase === 'confirm' && (
+          <div className="space-y-4">
+            {/* Class summary */}
+            <div
+              className="p-3 rounded-lg text-sm"
+              style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+            >
+              <div className="flex justify-between">
+                <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                  {classData.className}
+                </span>
+              </div>
+              <div className="mt-1">
+                {classData.date} · {classData.time}
+                {classData.duration ? ` · ${classData.duration}` : ''}
+              </div>
+              {classData.instructor && (
+                <div className="mt-0.5">with {classData.instructor}</div>
+              )}
+              <div className="mt-0.5">{classData.studioName}</div>
+            </div>
+
+            {/* Booking as user */}
+            <div
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm"
+              style={{
+                backgroundColor: 'var(--bg-surface-elevated)',
+              }}
+            >
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0"
+                style={{
+                  backgroundColor: 'var(--accent-fitness)' + '20',
+                  color: 'var(--accent-fitness)',
+                }}
+              >
+                {userInfo.firstName[0]?.toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div style={{ color: 'var(--text-primary)' }}>
+                  {userInfo.firstName} {userInfo.lastName}
+                </div>
+                <div className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
+                  {userInfo.email}
+                </div>
+              </div>
+              <button
+                onClick={() => setPhase('info')}
+                className="text-xs px-2 py-1 rounded-full"
+                style={{ color: 'var(--accent-fitness)' }}
+              >
+                Edit
+              </button>
+            </div>
+
+            {/* Google profile status */}
+            {hasGoogleProfile ? (
+              <div
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
+                style={{ backgroundColor: 'rgba(66, 133, 244, 0.1)', color: '#4285F4' }}
+              >
+                <Chrome size={14} />
+                Google account connected — auto sign-in enabled
+              </div>
+            ) : isGoogleUser ? (
+              <button
+                onClick={setupBrowserProfile}
+                disabled={settingUpBrowser}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors"
+                style={{
+                  backgroundColor: 'var(--bg-surface-elevated)',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <Chrome size={14} />
+                <span className="flex-1 text-left">
+                  {settingUpBrowser ? 'Opening browser — sign into Google...' : 'Connect Google for auto sign-in (optional)'}
+                </span>
+                {settingUpBrowser && <Loader2 size={14} className="animate-spin" />}
+              </button>
+            ) : null}
+
+            <button
+              onClick={startBooking}
+              className="w-full py-2.5 rounded-full text-sm font-medium transition-opacity"
+              style={{
+                backgroundColor: 'var(--accent-fitness)',
+                color: 'var(--bg-primary)',
+              }}
+            >
+              Book Now
+            </button>
+          </div>
+        )}
+
+        {/* ── Phase: Info (manual entry, fallback) ── */}
         {phase === 'info' && (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
@@ -235,38 +371,52 @@ export function FitnessClassBookingFlow({
               />
             </div>
 
-            {/* Google Login toggle */}
-            <button
-              onClick={() => setUserInfo({ ...userInfo, useGoogleLogin: !userInfo.useGoogleLogin })}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors"
-              style={{
-                backgroundColor: userInfo.useGoogleLogin
-                  ? 'rgba(66, 133, 244, 0.15)'
-                  : 'var(--bg-surface-elevated)',
-                border: userInfo.useGoogleLogin
-                  ? '1px solid rgba(66, 133, 244, 0.3)'
-                  : '1px solid transparent',
-              }}
-            >
-              <Chrome
-                size={18}
-                style={{ color: userInfo.useGoogleLogin ? '#4285F4' : 'var(--text-secondary)' }}
-              />
-              <span style={{ color: userInfo.useGoogleLogin ? '#4285F4' : 'var(--text-secondary)' }}>
-                Sign in with Google if available
-              </span>
+            {/* Google Login status / setup */}
+            {hasGoogleProfile ? (
               <div
-                className="ml-auto w-8 h-5 rounded-full relative transition-colors"
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm"
                 style={{
-                  backgroundColor: userInfo.useGoogleLogin ? '#4285F4' : 'var(--bg-primary)',
+                  backgroundColor: 'rgba(66, 133, 244, 0.15)',
+                  border: '1px solid rgba(66, 133, 244, 0.3)',
                 }}
               >
-                <div
-                  className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
-                  style={{ left: userInfo.useGoogleLogin ? '14px' : '2px' }}
-                />
+                <Chrome size={18} style={{ color: '#4285F4' }} />
+                <div className="flex-1">
+                  <span style={{ color: '#4285F4' }}>Google account connected</span>
+                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                    Auto sign-in enabled for studio websites
+                  </div>
+                </div>
+                <Check size={16} style={{ color: '#4285F4' }} />
               </div>
-            </button>
+            ) : (
+              <button
+                onClick={setupBrowserProfile}
+                disabled={settingUpBrowser}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors"
+                style={{
+                  backgroundColor: 'var(--bg-surface-elevated)',
+                  border: '1px solid var(--bg-surface-elevated)',
+                }}
+              >
+                <Chrome size={18} style={{ color: 'var(--text-secondary)' }} />
+                <div className="flex-1 text-left">
+                  <span style={{ color: 'var(--text-primary)' }}>
+                    {settingUpBrowser ? 'Opening browser...' : 'Connect Google account'}
+                  </span>
+                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                    {settingUpBrowser
+                      ? 'Sign into Google in the browser window that opens'
+                      : 'One-time setup — sign in once, auto-book everywhere'}
+                  </div>
+                </div>
+                {settingUpBrowser ? (
+                  <Loader2 size={16} className="animate-spin" style={{ color: 'var(--text-secondary)' }} />
+                ) : (
+                  <ExternalLink size={16} style={{ color: 'var(--text-secondary)' }} />
+                )}
+              </button>
+            )}
 
             {/* Class summary */}
             <div
@@ -289,7 +439,11 @@ export function FitnessClassBookingFlow({
             </div>
 
             <button
-              onClick={startBooking}
+              onClick={() => {
+                if (userInfo.firstName && userInfo.lastName && userInfo.email) {
+                  startBooking();
+                }
+              }}
               disabled={!userInfo.firstName || !userInfo.lastName || !userInfo.email}
               className="w-full py-2.5 rounded-full text-sm font-medium transition-opacity disabled:opacity-40"
               style={{
@@ -297,12 +451,12 @@ export function FitnessClassBookingFlow({
                 color: 'var(--bg-primary)',
               }}
             >
-              Start Booking
+              Book Now
             </button>
           </div>
         )}
 
-        {/* ── Phase 2: Live Progress ── */}
+        {/* ── Phase: Live Progress ── */}
         {phase === 'progress' && (
           <div className="space-y-4">
             <div className="space-y-3">
@@ -341,13 +495,13 @@ export function FitnessClassBookingFlow({
               })}
             </div>
 
-            {userInfo.useGoogleLogin && (
+            {hasGoogleProfile && (
               <div
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
                 style={{ backgroundColor: 'rgba(66, 133, 244, 0.1)', color: '#4285F4' }}
               >
                 <Chrome size={14} />
-                Using Google login when available
+                Using your Google account for auto sign-in
               </div>
             )}
 
@@ -365,7 +519,7 @@ export function FitnessClassBookingFlow({
           </div>
         )}
 
-        {/* ── Phase 3: Result ── */}
+        {/* ── Phase: Result ── */}
         {phase === 'result' && (
           <div className="space-y-4">
             {error ? (
@@ -406,7 +560,22 @@ export function FitnessClassBookingFlow({
                 <div>
                   <p className="font-medium" style={{ color: 'var(--text-primary)' }}>Payment required</p>
                   <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-                    This class requires payment. Complete checkout on the studio website.
+                    This class requires payment. Purchase a class pack on the studio website first.
+                  </p>
+                </div>
+              </div>
+            ) : result?.status === 'class_full' ? (
+              <div className="text-center space-y-3">
+                <div
+                  className="w-12 h-12 rounded-full flex items-center justify-center mx-auto"
+                  style={{ backgroundColor: 'var(--warning)' + '20' }}
+                >
+                  <AlertCircle size={24} style={{ color: 'var(--warning)' }} />
+                </div>
+                <div>
+                  <p className="font-medium" style={{ color: 'var(--text-primary)' }}>Class is full</p>
+                  <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+                    This class has no available spots. Try a different time or check for waitlist options.
                   </p>
                 </div>
               </div>

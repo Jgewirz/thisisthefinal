@@ -1,0 +1,57 @@
+{
+  "domain": "soul-cycle.com",
+  "studio_name": "SoulCycle",
+  "platform_type": "react-spa",
+  "booking_url": "https://www.soul-cycle.com/",
+  "auth_method": "google-sso",
+  "schedule_description": "Schedule loads dynamically after selecting a studio. Date tabs at the top, class cards below with time, instructor, theme. Each card has a Reserve button (or Waitlist if full).",
+  "schedule_url": "",
+  "flow_steps": [
+    "Navigate to soul-cycle.com and click 'Book a Bike' in top nav",
+    "Select the correct city/region from the dropdown (defaults to NYC)",
+    "Select the target studio from the studio list",
+    "Authenticate via Google SSO if not already logged in",
+    "Navigate to the correct date using date tabs",
+    "Find the target class and click 'Reserve'",
+    "Select a bike from the seat map (click any available position)",
+    "Confirm the booking (uses existing credits)"
+  ],
+  "obstacles": [
+    "City selector defaults to NYC — must change for non-NYC studios",
+    "Cookie consent banner may appear on first visit — dismiss it",
+    "Promotional popup may appear — close it (X or 'No thanks')",
+    "Schedule takes 3-5 seconds to load after navigation",
+    "Google OAuth popup needs 5-10 seconds to complete before interacting",
+    "After auth popup closes, page may need a moment to update",
+    "If page appears blank after navigation, wait 3-5s then scroll",
+    "If stuck on same page 3+ steps, try refreshing once",
+    "Unable to authenticate using Google SSO due to security issues with the browser.",
+    "Security issue with Google SSO, preventing login"
+  ],
+  "tips": [
+    "SoulCycle is a React SPA — always wait for dynamic content",
+    "If direct booking URL 404s, go to homepage and find booking from nav",
+    "Do NOT keep scrolling the same dropdown — if studio not found, change city first",
+    "After selecting a bike, if redirected to 'Buy Series' or 'Welcome to SoulCycle' with pricing (e.g. 'New Rider 1 Class $20'), user has NO credits — report PAYMENT_REQUIRED",
+    "Clicking 'Confirm' to USE an existing credit is OK — that's not a purchase",
+    "If Google account picker appears, select the correct email",
+    "If SSO fails, try email/password login as fallback",
+    "Studios page at /studios/ can be used to browse all locations",
+    "Try using a different browser or check if other login methods are available on the SoulCycle website.",
+    "Ensure browser compatibility for Google SSO or explore alternative authentication methods if available"
+  ],
+  "class_types_observed": [
+    "Cycling"
+  ],
+  "has_location_picker": true,
+  "has_spot_selection": true,
+  "confidence": 1.0,
+  "visit_count": 2,
+  "success_count": 0,
+  "fail_count": 2,
+  "last_visited": "2026-03-24T23:29:04Z",
+  "created_at": "2026-03-24T23:17:47Z",
+  "best_steps_to_schedule": null,
+  "avg_steps_to_schedule": null,
+  "steps_history": []
+}
