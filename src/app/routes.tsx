@@ -2,11 +2,21 @@ import { createBrowserRouter } from "react-router";
 import { Root } from "./components/Root";
 import { ChatView } from "./components/ChatView";
 import { LoginScreen } from "./components/LoginScreen";
+import { ForgotPasswordScreen } from "./components/ForgotPasswordScreen";
+import { ResetPasswordScreen } from "./components/ResetPasswordScreen";
 
 export const router = createBrowserRouter([
   {
     path: "/login",
     Component: LoginScreen,
+  },
+  {
+    path: "/forgot",
+    Component: ForgotPasswordScreen,
+  },
+  {
+    path: "/reset",
+    Component: ResetPasswordScreen,
   },
   {
     path: "/",

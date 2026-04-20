@@ -17,41 +17,159 @@ pool.on('error', (err) => {
   console.error('Unexpected PG pool error:', err);
 });
 
+export const DB_MIGRATION_STEPS = {
+  ensureUuidExtension: `CREATE EXTENSION IF NOT EXISTS pgcrypto;`,
+  createTables: `
+    CREATE TABLE IF NOT EXISTS users (
+      id            TEXT PRIMARY KEY,
+      email         TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS style_profiles (
+      user_id    TEXT PRIMARY KEY DEFAULT 'default',
+      profile    JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL DEFAULT 'default',
+      agent_id   TEXT NOT NULL,
+      type       TEXT NOT NULL CHECK (type IN ('user', 'bot')),
+      text       TEXT NOT NULL DEFAULT '',
+      image_url  TEXT,
+      rich_card  JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_user_agent
+      ON chat_messages (user_id, agent_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS reminders (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      agent_id    TEXT NOT NULL DEFAULT 'lifestyle',
+      title       TEXT NOT NULL,
+      notes       TEXT,
+      due_at      TIMESTAMPTZ NOT NULL,
+      notify_via  TEXT NOT NULL DEFAULT 'in_app'
+                  CHECK (notify_via IN ('in_app', 'email', 'push')),
+      status      TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'fired', 'completed', 'dismissed')),
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      fired_at    TIMESTAMPTZ
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_reminders_user_status_due
+      ON reminders (user_id, status, due_at);
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      token_hash  TEXT NOT NULL UNIQUE,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user
+      ON password_reset_tokens (user_id);
+  `,
+  // Existing projects may have a legacy `users` table without an `id` column.
+  // Migrate it forward without dropping data.
+  migrateUsersIdColumn: `
+    -- Legacy schemas may be missing required columns entirely. Add them first.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+
+    -- Some legacy schemas include telegram auth columns with NOT NULL constraints.
+    -- This app doesn't supply those fields, so we must relax the constraint.
+    DO $$
+    DECLARE telegram_type TEXT;
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'users'
+          AND column_name = 'telegram_id'
+      ) THEN
+        -- If telegram_id exists, ensure inserts that omit it still work by
+        -- backfilling NULLs and setting a DEFAULT. We only drop NOT NULL when
+        -- telegram_id is not part of the primary key.
+        SELECT data_type
+          INTO telegram_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'users'
+          AND column_name = 'telegram_id';
+
+        IF telegram_type IN ('bigint', 'integer', 'smallint') THEN
+          EXECUTE 'CREATE SEQUENCE IF NOT EXISTS users_telegram_id_seq';
+          EXECUTE 'ALTER TABLE users ALTER COLUMN telegram_id SET DEFAULT nextval(''users_telegram_id_seq'')';
+          EXECUTE 'UPDATE users SET telegram_id = nextval(''users_telegram_id_seq'') WHERE telegram_id IS NULL';
+        ELSE
+          EXECUTE 'ALTER TABLE users ALTER COLUMN telegram_id SET DEFAULT gen_random_uuid()::text';
+          EXECUTE 'UPDATE users SET telegram_id = gen_random_uuid()::text WHERE telegram_id IS NULL';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint c
+          JOIN unnest(c.conkey) AS colnum(attnum) ON TRUE
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = colnum.attnum
+          WHERE c.conrelid = 'users'::regclass
+            AND c.contype = 'p'
+            AND a.attname = 'telegram_id'
+        ) THEN
+          EXECUTE 'ALTER TABLE users ALTER COLUMN telegram_id DROP NOT NULL';
+        END IF;
+      END IF;
+    END $$;
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS id TEXT;
+    UPDATE users SET id = gen_random_uuid()::text WHERE id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_id_unique ON users (id);
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        WHERE c.conrelid = 'users'::regclass
+          AND c.contype = 'p'
+      ) THEN
+        ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+      END IF;
+    END $$;
+
+    -- Only add an email unique index when the column exists (it will) and has values.
+    -- If legacy rows have NULL emails, a UNIQUE index is still valid in Postgres (multiple NULLs allowed).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users (email);
+  `,
+} as const;
+
 /** Run the initial migration to create tables if they don't exist. */
 export async function initDb(): Promise<void> {
   const client = await pool.connect();
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id            TEXT PRIMARY KEY,
-        email         TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        name          TEXT NOT NULL,
-        created_at    TIMESTAMPTZ DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS style_profiles (
-        user_id   TEXT PRIMARY KEY DEFAULT 'default',
-        profile   JSONB NOT NULL,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS chat_messages (
-        id         TEXT PRIMARY KEY,
-        user_id    TEXT NOT NULL DEFAULT 'default',
-        agent_id   TEXT NOT NULL,
-        type       TEXT NOT NULL CHECK (type IN ('user', 'bot')),
-        text       TEXT NOT NULL DEFAULT '',
-        image_url  TEXT,
-        rich_card  JSONB,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_chat_messages_user_agent
-        ON chat_messages (user_id, agent_id, created_at);
-    `);
+    await client.query('BEGIN');
+    await client.query(DB_MIGRATION_STEPS.ensureUuidExtension);
+    await client.query(DB_MIGRATION_STEPS.createTables);
+    await client.query(DB_MIGRATION_STEPS.migrateUsersIdColumn);
+    await client.query('COMMIT');
     console.log('  ✓ Database tables ready');
   } catch (err: any) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignore rollback failures
+    }
     console.error('DB migration error:', err.message);
     console.warn('  ⚠ Running without database — falling back to in-memory storage');
   } finally {
@@ -91,6 +209,22 @@ export async function getUserByEmail(
   } catch (err: any) {
     console.error('getUserByEmail error:', err.message);
     return null;
+  }
+}
+
+export async function updateUserPassword(
+  userId: string,
+  passwordHash: string
+): Promise<boolean> {
+  try {
+    const res = await pool.query(
+      'UPDATE users SET password_hash = $1 WHERE id = $2',
+      [passwordHash, userId]
+    );
+    return (res.rowCount ?? 0) > 0;
+  } catch (err: any) {
+    console.error('updateUserPassword error:', err.message);
+    return false;
   }
 }
 
@@ -165,13 +299,25 @@ export async function getChatHistory(
   offset = 0
 ): Promise<DbChatMessage[]> {
   try {
-    const { rows } = await pool.query(
-      `SELECT * FROM chat_messages
-       WHERE user_id = $1 AND agent_id = $2
-       ORDER BY created_at ASC
-       LIMIT $3 OFFSET $4`,
-      [userId, agentId, limit, offset]
-    );
+    // The "All" agent is a combined timeline across specialists.
+    // Bot messages sent from the All tab may be persisted under the classified specialist
+    // (`travel`, `fitness`, etc.), so the All timeline must fetch across agent ids.
+    const { rows } =
+      agentId === 'all'
+        ? await pool.query(
+            `SELECT * FROM chat_messages
+             WHERE user_id = $1
+             ORDER BY created_at ASC
+             LIMIT $2 OFFSET $3`,
+            [userId, limit, offset]
+          )
+        : await pool.query(
+            `SELECT * FROM chat_messages
+             WHERE user_id = $1 AND agent_id = $2
+             ORDER BY created_at ASC
+             LIMIT $3 OFFSET $4`,
+            [userId, agentId, limit, offset]
+          );
     return rows;
   } catch (err: any) {
     console.error('getChatHistory error:', err.message);

@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'girlbot-secret-change-in-production';
+import { getJwtSecret } from '../config/jwtSecret.js';
 
 export interface AuthUser {
   id: string;
@@ -33,7 +32,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 
   const token = authHeader.slice(7);
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
+    const decoded = jwt.verify(token, getJwtSecret()) as AuthUser;
     req.user = decoded;
     next();
   } catch {
@@ -45,7 +44,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
 export function generateToken(user: AuthUser): string {
   return jwt.sign(
     { id: user.id, email: user.email, name: user.name },
-    JWT_SECRET,
+    getJwtSecret(),
     { expiresIn: '7d' }
   );
 }

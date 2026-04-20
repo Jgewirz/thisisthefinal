@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { streamChat, ChatMessage } from '../services/anthropic.js';
 import { saveChatMessage, getChatHistory, deleteChatMessages, deleteAllChatMessages } from '../services/db.js';
 import { classifyDomain } from '../services/classifier.js';
+import { idempotency } from '../middleware/idempotency.js';
 
 const router = Router();
 
@@ -34,11 +35,21 @@ function truncateMessages(messages: ChatMessage[], maxMessages = 20): ChatMessag
 
 // POST /api/chat — streaming SSE endpoint
 router.post('/', async (req: Request, res: Response) => {
-  const { agentId, messages, styleProfile } = req.body as {
+  const { agentId, messages, styleProfile, location } = req.body as {
     agentId: string;
     messages: ChatMessage[];
     styleProfile?: object;
+    location?: { lat: number; lng: number };
   };
+
+  const userLocation =
+    location &&
+    typeof location.lat === 'number' &&
+    typeof location.lng === 'number' &&
+    Number.isFinite(location.lat) &&
+    Number.isFinite(location.lng)
+      ? { lat: location.lat, lng: location.lng }
+      : undefined;
 
   // ── Input validation ──────────────────────────────────────
   if (!agentId || !messages?.length) {
@@ -84,7 +95,7 @@ router.post('/', async (req: Request, res: Response) => {
       : Array.isArray(lastUserMsg?.content)
         ? lastUserMsg.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join(' ')
         : '';
-    effectiveAgentId = classifyDomain(text);
+    effectiveAgentId = await classifyDomain(text);
   }
 
   // Send the classified agent to the client for badge display
@@ -94,10 +105,21 @@ router.post('/', async (req: Request, res: Response) => {
     // Strip base64 images from older messages to reduce token usage & cost
     const truncatedMessages = truncateMessages(messages);
 
-    for await (const token of streamChat(effectiveAgentId, truncatedMessages, styleProfile, abortController.signal)) {
+    for await (const evt of streamChat(
+      effectiveAgentId,
+      truncatedMessages,
+      styleProfile,
+      abortController.signal,
+      userLocation,
+      req.user!.id
+    )) {
       if (clientDisconnected) break;
-      fullResponse += token;
-      res.write(`data: ${JSON.stringify({ token })}\n\n`);
+      if (evt.type === 'token') {
+        fullResponse += evt.text;
+        res.write(`data: ${JSON.stringify({ token: evt.text })}\n\n`);
+      } else if (evt.type === 'card') {
+        res.write(`data: ${JSON.stringify({ card: evt.card })}\n\n`);
+      }
     }
 
     if (!clientDisconnected) {
@@ -116,7 +138,8 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // POST /api/chat/messages — save a single message (user or bot)
-router.post('/messages', async (req: Request, res: Response) => {
+// Idempotent: clients may send an `Idempotency-Key` header to safely retry.
+router.post('/messages', idempotency(), async (req: Request, res: Response) => {
   const { id, agentId, type, text, imageUrl, richCard } = req.body as {
     id: string;
     agentId: string;
@@ -154,7 +177,7 @@ router.delete('/messages', async (req: Request, res: Response) => {
   const agentId = req.query.agentId as string;
   const userId = req.user!.id;
 
-  if (!agentId) {
+  if (!agentId || agentId === 'all') {
     // Clear ALL conversations
     const deleted = await deleteAllChatMessages(userId);
     res.json({ deleted });

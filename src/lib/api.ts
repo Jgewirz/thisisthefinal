@@ -2,6 +2,7 @@ import type { AgentId, Message, RichCard } from '../app/types';
 import { useChatStore } from '../stores/chat';
 import { useStyleStore } from '../stores/style';
 import { useAuthStore } from '../stores/auth';
+import { useLocationStore } from '../stores/location';
 
 // ── Authenticated fetch wrapper ─────────────────────────────
 
@@ -77,6 +78,9 @@ async function readStream(res: Response, agentId: AgentId) {
         if (data.token) {
           store.appendToLastBot(agentId, data.token);
         }
+        if (data.card && typeof data.card === 'object' && data.card.type) {
+          store.setRichCardOnLastBot(agentId, data.card);
+        }
         if (data.error) {
           store.appendToLastBot(agentId, `\n\n[Error: ${data.error}]`);
         }
@@ -121,7 +125,12 @@ async function persistMessage(msg: Message) {
   }
   authFetch('/api/chat/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      // Message id is stable per client-side message, so reuse it as the
+      // idempotency key. Safe on retry / double-clicks / HMR re-renders.
+      'Idempotency-Key': `msg:${msg.id}`,
+    },
     body: JSON.stringify({
       id: msg.id,
       agentId: msg.agentId,
@@ -229,6 +238,7 @@ export async function sendMessage(
         agentId,
         messages: apiMessages,
         styleProfile,
+        location: useLocationStore.getState().coords ?? undefined,
       }),
     });
 
@@ -238,17 +248,14 @@ export async function sendMessage(
 
     await readStream(res, agentId);
 
-    // Try to extract a rich card from the bot's text response
+    // Rich cards are now ground-truth only:
+    //   - `placesList` cards come from the server via SSE (Google Places API)
+    //   - style cards (`colorSeason`, `outfit`) come from /api/style/analyze below
+    // We deliberately do NOT parse rich cards out of the model's free text —
+    // that was a source of hallucinated data (fake flights, classes, places).
     const finalMessages = store.getMessages(agentId);
     const lastBot = finalMessages[finalMessages.length - 1];
-    if (lastBot && lastBot.type === 'bot' && lastBot.text && !analysisPromise) {
-      const extracted = extractRichCard(lastBot.text);
-      if (extracted) {
-        store.setRichCardOnLastBot(agentId, extracted);
-      }
-    }
 
-    // Persist the final bot message to DB
     if (lastBot && lastBot.type === 'bot' && lastBot.text) {
       persistMessage(lastBot);
     }
@@ -360,50 +367,14 @@ async function runStyleAnalysis(
   }
 }
 
-// ── Rich Card Extraction ────────────────────────────────────
-
-/**
- * Scan a bot response for JSON blocks that match known rich card schemas.
- * Agents are instructed to include structured JSON for cards — this extracts it.
- */
-function extractRichCard(text: string): RichCard | null {
-  // Look for JSON blocks in code fences
-  const jsonMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-  if (!jsonMatch) return null;
-
-  try {
-    const data = JSON.parse(jsonMatch[1]);
-
-    // Detect card type by data shape
-    if (data.season && data.colors) {
-      return { type: 'colorSeason', data };
-    }
-    if (data.score != null && data.strengths) {
-      return { type: 'outfit', data };
-    }
-    if (data.airline || (data.departure && data.arrival)) {
-      return { type: 'flight', data };
-    }
-    if (data.name && (data.address || data.rating || data.location)) {
-      return { type: 'place', data };
-    }
-    if (data.className || data.instructor) {
-      return { type: 'fitnessClass', data };
-    }
-    if (data.time && data.action) {
-      return { type: 'reminder', data };
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 // ── Conversation Management ─────────────────────────────────
 
 /** Clear chat history for a specific agent. */
 export async function clearChatHistory(agentId: AgentId): Promise<void> {
+  if (agentId === 'all') {
+    await clearAllHistory();
+    return;
+  }
   try {
     await authFetch(`/api/chat/messages?agentId=${agentId}`, { method: 'DELETE' });
   } catch {

@@ -1,9 +1,13 @@
 import { Message, agents } from '../types';
 import { Check, CheckCheck, Star } from 'lucide-react';
 import { PlaceCard } from './cards/PlaceCard';
+import { PlacesListCard } from './cards/PlacesListCard';
 import { ColorSeasonCard } from './cards/ColorSeasonCard';
 import { FitnessClassCard } from './cards/FitnessClassCard';
 import { FlightCard } from './cards/FlightCard';
+import { FlightListCard } from './cards/FlightListCard';
+import { HotelListCard } from './cards/HotelListCard';
+import { ClassListCard } from './cards/ClassListCard';
 import ReactMarkdown from 'react-markdown';
 
 interface MessageBubbleProps {
@@ -224,6 +228,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               {message.richCard.type === 'place' && (
                 <PlaceCard data={message.richCard.data} agentColor={agent.color} />
               )}
+              {message.richCard.type === 'placesList' && (
+                <PlacesListCard data={message.richCard.data} agentColor={agent.color} />
+              )}
               {message.richCard.type === 'colorSeason' && (
                 <ColorSeasonCard data={message.richCard.data} agentColor={agent.color} />
               )}
@@ -233,34 +240,73 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               {message.richCard.type === 'flight' && (
                 <FlightCard data={message.richCard.data} agentColor={agent.color} />
               )}
+              {message.richCard.type === 'flightList' && (
+                <FlightListCard data={message.richCard.data} agentColor={agent.color} />
+              )}
+              {message.richCard.type === 'hotelList' && (
+                <HotelListCard data={message.richCard.data} agentColor={agent.color} />
+              )}
+              {message.richCard.type === 'classList' && (
+                <ClassListCard data={message.richCard.data} agentColor={agent.color} />
+              )}
               {message.richCard.type === 'outfit' && (
                 <OutfitRatingCard
                   data={message.richCard.data}
                   agentColor={agent.color}
                 />
               )}
-              {message.richCard.type === 'reminder' && (
-                <div
-                  className="flex items-start gap-2 p-3 rounded-lg"
-                  style={{ backgroundColor: 'var(--bg-surface)' }}
-                >
+              {message.richCard.type === 'reminder' && (() => {
+                const r = message.richCard.data as {
+                  id?: string;
+                  title?: string;
+                  notes?: string | null;
+                  due_at?: string;
+                  // Legacy shape: { time, action }
+                  time?: string;
+                  action?: string;
+                };
+                const when = r.due_at
+                  ? new Date(r.due_at).toLocaleString('en-US', {
+                      weekday: 'short',
+                      month: 'short',
+                      day: 'numeric',
+                      hour: 'numeric',
+                      minute: '2-digit',
+                    })
+                  : r.time ?? '';
+                const what = r.title ?? r.action ?? 'Reminder';
+                return (
                   <div
-                    className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
-                    style={{ backgroundColor: 'var(--success)' }}
+                    className="flex items-start gap-2 p-3 rounded-lg"
+                    style={{ backgroundColor: 'var(--bg-surface)' }}
                   >
-                    <Check size={14} style={{ color: 'var(--bg-primary)' }} />
-                  </div>
-                  <div>
-                    <div style={{ color: 'var(--text-primary)' }}>
-                      Reminder set for{' '}
-                      <span className="font-semibold">{message.richCard.data.time}</span>
+                    <div
+                      className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                      style={{ backgroundColor: 'var(--success)' }}
+                    >
+                      <Check size={14} style={{ color: 'var(--bg-primary)' }} />
                     </div>
-                    <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                      {message.richCard.data.action}
+                    <div>
+                      <div style={{ color: 'var(--text-primary)' }}>
+                        <span className="font-semibold">{what}</span>
+                      </div>
+                      {when && (
+                        <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                          {when}
+                        </div>
+                      )}
+                      {r.notes && (
+                        <div
+                          className="text-sm mt-1"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {r.notes}
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
           )}
         </div>

@@ -1,6 +1,7 @@
 import { Paperclip, MapPin, Send, X } from 'lucide-react';
 import { AgentId, agents } from '../types';
 import { useState, useRef, useCallback } from 'react';
+import { useLocationStore } from '../../stores/location';
 
 interface ChatInputProps {
   agentId: AgentId;
@@ -22,6 +23,9 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
   const agent = agents[agentId];
   const actions = quickActions[agentId];
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const locationStatus = useLocationStore((s) => s.status);
+  const locationError = useLocationStore((s) => s.error);
+  const requestLocation = useLocationStore((s) => s.request);
 
   const handleSubmit = useCallback(() => {
     const text = message.trim();
@@ -155,9 +159,30 @@ export function ChatInput({ agentId, onSend, disabled }: ChatInputProps) {
             />
           </button>
           <button
-            className="p-2 rounded-lg transition-all duration-150 hover:bg-[var(--bg-surface-elevated)] active:scale-90"
+            onClick={requestLocation}
+            disabled={locationStatus === 'requesting'}
+            title={
+              locationStatus === 'granted'
+                ? 'Location shared — tap to refresh'
+                : locationStatus === 'denied'
+                  ? 'Location permission denied'
+                  : locationStatus === 'unavailable'
+                    ? 'Geolocation not supported'
+                    : locationError || 'Share your location to find places nearby'
+            }
+            className="p-2 rounded-lg transition-all duration-150 hover:bg-[var(--bg-surface-elevated)] active:scale-90 disabled:opacity-60"
           >
-            <MapPin size={20} style={{ color: 'var(--text-secondary)' }} />
+            <MapPin
+              size={20}
+              style={{
+                color:
+                  locationStatus === 'granted'
+                    ? agent.color
+                    : locationStatus === 'denied' || locationStatus === 'error'
+                      ? 'var(--error)'
+                      : 'var(--text-secondary)',
+              }}
+            />
           </button>
         </div>
 

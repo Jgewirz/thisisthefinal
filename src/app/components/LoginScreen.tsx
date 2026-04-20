@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { useAuthStore } from '../../stores/auth';
 
 export function LoginScreen() {
@@ -170,6 +170,18 @@ export function LoginScreen() {
           >
             {loading ? 'Please wait...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
+
+          {!isRegister && (
+            <div className="text-center -mt-2">
+              <Link
+                to="/forgot"
+                className="text-xs font-medium hover:underline"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Forgot password?
+              </Link>
+            </div>
+          )}
         </form>
 
         {/* Toggle */}

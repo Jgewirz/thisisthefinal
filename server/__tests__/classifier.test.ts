@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { classifyDomain } from '../services/classifier.js';
+import { classifyDomainKeyword as classifyDomain } from '../services/classifier.js';
 
-describe('classifyDomain', () => {
+describe('classifyDomainKeyword (fallback)', () => {
   describe('style queries', () => {
     it('detects outfit-related queries', () => {
       expect(classifyDomain('What should I wear to a wedding?')).toBe('style');
