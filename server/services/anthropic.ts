@@ -20,6 +20,9 @@ import {
   type FitnessAggregatorLink,
   type FitnessClassSearchParams,
 } from './fitnessClasses.js';
+import { listWardrobeItems, type WardrobeItem } from './wardrobe.js';
+import { searchFlightsFallback } from './serpFlights.js';
+import { searchHotelsFallback } from './serpHotels.js';
 
 function getOpenAIAuth() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -54,8 +57,26 @@ export interface UserLocation {
   lng: number;
 }
 
+/**
+ * Activity kinds correspond 1:1 with the tool thsat's currently executing (or
+ * `thinking` when we're waiting on the model itself). The client maps the kind
+ * to a user-friendly label + icon, so adding a new kind only requires the
+ * client-side map to grow.
+ */
+export type ActivityKind =
+  | 'thinking'
+  | 'search_places'
+  | 'search_flights'
+  | 'search_hotels'
+  | 'find_fitness_classes'
+  | 'create_reminder'
+  | 'list_reminders'
+  | 'list_wardrobe'
+  | 'writing';
+
 export type StreamEvent =
   | { type: 'token'; text: string }
+  | { type: 'activity'; kind: ActivityKind; detail?: string }
   | { type: 'card'; card: { type: 'placesList'; data: { query: string; places: Place[] } } }
   | {
       type: 'card';
@@ -226,6 +247,55 @@ const CREATE_REMINDER_TOOL = {
   },
 };
 
+const LIST_REMINDERS_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'list_reminders',
+    description:
+      'List the user’s real reminders from the database. Use when the user asks what reminders they have, what’s due, or to review their schedule. Do not invent reminders.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          description:
+            'Optional status filter: pending, fired, completed, dismissed. Omit to include all.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Optional max number of reminders to return (default 20, max 100).',
+        },
+      },
+      required: [],
+    },
+  },
+};
+
+const LIST_WARDROBE_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'list_wardrobe',
+    description:
+      'Read the user\'s actual wardrobe items from the database. Call this whenever the user asks about their wardrobe, what they own, what outfits they can make, or requests personalized outfit or styling advice based on their real clothes. Returns item category, color, subtype, seasons, warmth, whether it has a photo, and its Ready status.',
+    parameters: {
+      type: 'object',
+      properties: {
+        category: {
+          type: 'string',
+          enum: ['top', 'bottom', 'dress', 'outerwear', 'shoes', 'accessory', 'activewear'],
+          description: 'Optional: filter by category. Omit to return all items.',
+        },
+        verified_only: {
+          type: 'boolean',
+          description:
+            'If true, return only items the user has marked "Ready for outfits" (photo-verified). Default false returns all items.',
+        },
+      },
+      required: [],
+    },
+  },
+};
+
 const SEARCH_FLIGHTS_TOOL = {
   type: 'function' as const,
   function: {
@@ -318,17 +388,23 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
       agentId === 'travel' ||
       agentId === 'style' ||
       agentId === 'all');
+  const wardrobeAllowed = !!userId && (agentId === 'style' || agentId === 'all');
   if (placesAllowed) tools.push(SEARCH_PLACES_TOOL);
   if (flightsAllowed) tools.push(SEARCH_FLIGHTS_TOOL);
   if (hotelsAllowed) tools.push(SEARCH_HOTELS_TOOL);
   if (fitnessClassesAllowed) tools.push(FIND_FITNESS_CLASSES_TOOL);
-  if (remindersAllowed) tools.push(CREATE_REMINDER_TOOL);
+  if (remindersAllowed) {
+    tools.push(CREATE_REMINDER_TOOL);
+    tools.push(LIST_REMINDERS_TOOL);
+  }
+  if (wardrobeAllowed) tools.push(LIST_WARDROBE_TOOL);
 
   const canUseTools = tools.length > 0;
   const openaiMessages = toOpenAIMessages(systemPrompt, messages);
 
   // ── Step 1: non-streaming tool-check ──────────────────────
   if (canUseTools) {
+    yield { type: 'activity', kind: 'thinking' };
     const first = await getOpenAI().chat.completions.create(
       {
         model: config.model,
@@ -354,6 +430,7 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
       let hotelProviderError: string | undefined;
       let fitnessProviderError: string | undefined;
       let reminderCreated: Reminder | null = null;
+      let remindersListedCount = 0;
       const usedTools = new Set<string>();
 
       for (const tc of toolCalls) {
@@ -369,6 +446,7 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
         if (name === 'search_places' && placesAllowed) {
           usedTools.add('search_places');
           const query = (args.query || '').trim();
+          yield { type: 'activity', kind: 'search_places', detail: query || undefined };
           let places: Place[] = [];
           try {
             if (query) {
@@ -399,47 +477,82 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
             nonStop: typeof args.nonStop === 'boolean' ? args.nonStop : undefined,
             currency: args.currency ? String(args.currency).trim() : undefined,
           };
-          let offers: FlightOffer[] = [];
-          let searchLink = buildGoogleFlightsUrl(params);
-          let toolErr: string | undefined;
-          try {
-            if (params.origin && params.destination && params.departDate) {
+
+          // Guard: if required params are missing the model called too early.
+          // Return a structured error so the model knows exactly what to ask for.
+          const missingFlightParams: string[] = [];
+          if (!params.origin) missingFlightParams.push('origin airport/city');
+          if (!params.destination) missingFlightParams.push('destination airport/city');
+          if (!params.departDate) missingFlightParams.push('departure date (YYYY-MM-DD)');
+
+          if (missingFlightParams.length > 0) {
+            toolMessages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                error: 'missing_required_params',
+                missing: missingFlightParams,
+                instruction:
+                  `Ask the user for the missing information before retrying: ${missingFlightParams.join(', ')}.`,
+              }),
+            });
+          } else {
+            let offers: FlightOffer[] = [];
+            let searchLink = buildGoogleFlightsUrl(params);
+            let toolErr: string | undefined;
+            yield {
+              type: 'activity',
+              kind: 'search_flights',
+              detail: `${params.origin} → ${params.destination}`,
+            };
+            try {
               const result = await searchFlights(params);
               offers = result.offers;
               searchLink = result.searchLink;
+            } catch (amadeusErr: any) {
+              console.error('search_flights amadeus error:', amadeusErr.message);
+              try {
+                const serpOffers = await searchFlightsFallback(params);
+                if (serpOffers.length > 0) {
+                  offers = serpOffers;
+                } else {
+                  toolErr = amadeusErr.message;
+                  flightProviderError = toolErr;
+                }
+              } catch (serpErr: any) {
+                console.error('search_flights serp error:', serpErr.message);
+                toolErr = amadeusErr.message;
+                flightProviderError = toolErr;
+              }
             }
-          } catch (err: any) {
-            toolErr = err.message;
-            flightProviderError = toolErr;
-            console.error('search_flights error:', err.message);
-          }
-          totalFlights += offers.length;
-          const bookingLinks = buildBookingLinks(params);
-          yield {
-            type: 'card',
-            card: {
-              type: 'flightList',
-              data: {
-                query: params,
-                offers,
-                searchLink,
-                providerError: toolErr,
-                bookingLinks,
+            totalFlights += offers.length;
+            const bookingLinks = buildBookingLinks(params);
+            yield {
+              type: 'card',
+              card: {
+                type: 'flightList',
+                data: {
+                  query: params,
+                  offers,
+                  searchLink,
+                  providerError: toolErr,
+                  bookingLinks,
+                },
               },
-            },
-          };
-          toolMessages.push({
-            role: 'tool',
-            tool_call_id: tc.id,
-            content: JSON.stringify({
-              query: params,
-              count: offers.length,
-              offers: offers.slice(0, 6),
-              searchLink,
-              bookingLinks: bookingLinks.map((l) => `${l.name}: ${l.url}`),
-              error: toolErr,
-            }),
-          });
+            };
+            toolMessages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                query: params,
+                count: offers.length,
+                offers: offers.slice(0, 6),
+                searchLink,
+                bookingLinks: bookingLinks.map((l) => `${l.name}: ${l.url}`),
+                error: toolErr,
+              }),
+            });
+          }
         } else if (name === 'find_fitness_classes' && fitnessClassesAllowed) {
           usedTools.add('find_fitness_classes');
           const fp: FitnessClassSearchParams = {
@@ -453,6 +566,11 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
           let studios: Place[] = [];
           let aggregatorLinks: FitnessAggregatorLink[] = [];
           let toolErr: string | undefined;
+          yield {
+            type: 'activity',
+            kind: 'find_fitness_classes',
+            detail: fp.activity || undefined,
+          };
           try {
             const result = await searchFitnessClasses(fp);
             studios = result.studios;
@@ -508,51 +626,90 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
             rooms: typeof args.rooms === 'number' ? args.rooms : undefined,
             currency: args.currency ? String(args.currency).trim() : undefined,
           };
-          let hotelOffers: HotelOffer[] = [];
-          let hotelSearchLink = buildHotelBookingLinks(hp)[0]!.url;
-          let toolErr: string | undefined;
-          try {
-            if (hp.cityCode && hp.checkIn && hp.checkOut) {
+
+          // Guard: if required params are missing the model called too early.
+          const missingHotelParams: string[] = [];
+          if (!hp.cityCode) missingHotelParams.push('city code (e.g. PAR for Paris)');
+          if (!hp.checkIn) missingHotelParams.push('check-in date (YYYY-MM-DD)');
+          if (!hp.checkOut) missingHotelParams.push('check-out date (YYYY-MM-DD)');
+
+          if (missingHotelParams.length > 0) {
+            toolMessages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                error: 'missing_required_params',
+                missing: missingHotelParams,
+                instruction:
+                  `Ask the user for the missing information before retrying: ${missingHotelParams.join(', ')}.`,
+              }),
+            });
+          } else {
+            let hotelOffers: HotelOffer[] = [];
+            let hotelSearchLink = buildHotelBookingLinks(hp)[0]!.url;
+            let toolErr: string | undefined;
+            yield {
+              type: 'activity',
+              kind: 'search_hotels',
+              detail: hp.cityName || hp.cityCode,
+            };
+            try {
               const result = await searchHotels(hp);
               hotelOffers = result.offers;
               hotelSearchLink = result.searchLink;
+            } catch (amadeusErr: any) {
+              console.error('search_hotels amadeus error:', amadeusErr.message);
+              try {
+                const serpOffers = await searchHotelsFallback(hp);
+                if (serpOffers.length > 0) {
+                  hotelOffers = serpOffers;
+                } else {
+                  toolErr = amadeusErr.message;
+                  hotelProviderError = toolErr;
+                }
+              } catch (serpErr: any) {
+                console.error('search_hotels serp error:', serpErr.message);
+                toolErr = amadeusErr.message;
+                hotelProviderError = toolErr;
+              }
             }
-          } catch (err: any) {
-            toolErr = err.message;
-            hotelProviderError = toolErr;
-            console.error('search_hotels error:', err.message);
-          }
-          totalHotels += hotelOffers.length;
-          const hotelLinks = buildHotelBookingLinks(hp);
-          yield {
-            type: 'card',
-            card: {
-              type: 'hotelList',
-              data: {
-                query: hp,
-                offers: hotelOffers,
-                searchLink: hotelSearchLink,
-                providerError: toolErr,
-                bookingLinks: hotelLinks,
+            totalHotels += hotelOffers.length;
+            const hotelLinks = buildHotelBookingLinks(hp);
+            yield {
+              type: 'card',
+              card: {
+                type: 'hotelList',
+                data: {
+                  query: hp,
+                  offers: hotelOffers,
+                  searchLink: hotelSearchLink,
+                  providerError: toolErr,
+                  bookingLinks: hotelLinks,
+                },
               },
-            },
-          };
-          toolMessages.push({
-            role: 'tool',
-            tool_call_id: tc.id,
-            content: JSON.stringify({
-              query: hp,
-              count: hotelOffers.length,
-              offers: hotelOffers.slice(0, 6),
-              searchLink: hotelSearchLink,
-              bookingLinks: hotelLinks.map((l) => `${l.name}: ${l.url}`),
-              error: toolErr,
-            }),
-          });
+            };
+            toolMessages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                query: hp,
+                count: hotelOffers.length,
+                offers: hotelOffers.slice(0, 6),
+                searchLink: hotelSearchLink,
+                bookingLinks: hotelLinks.map((l) => `${l.name}: ${l.url}`),
+                error: toolErr,
+              }),
+            });
+          }
         } else if (name === 'create_reminder' && remindersAllowed) {
           usedTools.add('create_reminder');
           let reminder: Reminder | null = null;
           let toolErr: string | undefined;
+          yield {
+            type: 'activity',
+            kind: 'create_reminder',
+            detail: args.title ? String(args.title).slice(0, 60) : undefined,
+          };
           try {
             reminder = await createReminder({
               userId: userId!,
@@ -583,6 +740,93 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
                     notifyVia: reminder.notify_via,
                   }
                 : { ok: false, error: toolErr ?? 'unknown error' }
+            ),
+          });
+        } else if (name === 'list_reminders' && remindersAllowed) {
+          usedTools.add('list_reminders');
+          yield { type: 'activity', kind: 'list_reminders' };
+          let toolErr: string | undefined;
+          let reminders: Reminder[] = [];
+          try {
+            const { listReminders } = await import('./reminders.js');
+            const rawStatus = args.status ? String(args.status).trim() : '';
+            const status =
+              rawStatus && ['pending', 'fired', 'completed', 'dismissed'].includes(rawStatus)
+                ? (rawStatus as any)
+                : undefined;
+            const limit =
+              typeof args.limit === 'number' && Number.isFinite(args.limit)
+                ? Math.min(Math.max(args.limit, 1), 100)
+                : 20;
+            reminders = await listReminders(userId!, { status, limit });
+          } catch (err: any) {
+            toolErr = err.message;
+            console.error('list_reminders error:', err.message);
+          }
+          remindersListedCount = reminders.length;
+          toolMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify(
+              toolErr
+                ? { ok: false, error: toolErr }
+                : {
+                    ok: true,
+                    count: reminders.length,
+                    reminders: reminders.map((r) => ({
+                      id: r.id,
+                      title: r.title,
+                      due_at: r.due_at,
+                      status: r.status,
+                      notify_via: r.notify_via,
+                    })),
+                  }
+            ),
+          });
+        } else if (name === 'list_wardrobe' && wardrobeAllowed) {
+          usedTools.add('list_wardrobe');
+          yield { type: 'activity', kind: 'list_wardrobe' };
+          let wardrobeItems: WardrobeItem[] = [];
+          let toolErr: string | undefined;
+          try {
+            const category = args.category as string | undefined;
+            wardrobeItems = await listWardrobeItems(userId!, {
+              category: category as any,
+              limit: 200,
+            });
+            if (args.verified_only) {
+              wardrobeItems = wardrobeItems.filter(
+                (it) => it.attributes?.verified === true
+              );
+            }
+          } catch (err: any) {
+            toolErr = err.message;
+            console.error('list_wardrobe error:', err.message);
+          }
+          // Strip base64 image_url to keep the context window lean.
+          const compact = wardrobeItems.map((it) => ({
+            id: it.id,
+            category: it.category,
+            subtype: it.subtype ?? null,
+            color: it.color ?? null,
+            warmth: it.warmth ?? null,
+            seasons: it.seasons,
+            occasions: it.occasions,
+            has_photo: Boolean(it.image_url),
+            ready: it.attributes?.verified === true,
+          }));
+          toolMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify(
+              toolErr
+                ? { error: toolErr }
+                : {
+                    total: compact.length,
+                    ready: compact.filter((i) => i.ready).length,
+                    draft: compact.filter((i) => !i.ready).length,
+                    items: compact,
+                  }
             ),
           });
         } else {
@@ -620,6 +864,18 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
           );
         }
       }
+      if (usedTools.has('list_reminders')) {
+        groundingParts.push(
+          remindersListedCount === 0
+            ? 'list_reminders returned zero reminders. Do NOT invent any; tell the user they have no reminders that match and offer to create one.'
+            : 'Summarize the reminders from list_reminders above (title + due time + status). Do NOT invent reminders or times not in the tool result. Keep it under 4 sentences.'
+        );
+      }
+      if (usedTools.has('list_wardrobe')) {
+        groundingParts.push(
+          'You now have the user\'s real wardrobe from list_wardrobe. Reference their actual items by category and color when making outfit or styling suggestions. Only mention items that appear in the tool result — do NOT invent clothing the user does not own. If an item has ready: false, note it is a draft and may need a photo to verify. Keep suggestions grounded and specific.'
+        );
+      }
       if (usedTools.has('find_fitness_classes')) {
         if (fitnessProviderError) {
           groundingParts.push(
@@ -650,6 +906,27 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
           );
         }
       }
+      if (usedTools.has('search_flights') && totalFlights === 0 && !flightProviderError) {
+        // Check if ANY flight tool message contains a missing_required_params error.
+        const hasMissingFlightParams = toolMessages.some(
+          (m) => m.role === 'tool' && m.content.includes('missing_required_params')
+        );
+        if (hasMissingFlightParams) {
+          groundingParts.push(
+            'The search_flights tool was called but required parameters (origin, destination, or departure date) were missing. Ask the user for the missing information in a friendly, concise way. Do NOT invent flight options or speculate on routes.'
+          );
+        }
+      }
+      if (usedTools.has('search_hotels') && totalHotels === 0 && !hotelProviderError) {
+        const hasMissingHotelParams = toolMessages.some(
+          (m) => m.role === 'tool' && m.content.includes('missing_required_params')
+        );
+        if (hasMissingHotelParams) {
+          groundingParts.push(
+            'The search_hotels tool was called but required parameters (city code, check-in date, or check-out date) were missing. Ask the user for the missing information in a friendly, concise way. Do NOT invent hotel options.'
+          );
+        }
+      }
       if (usedTools.has('search_flights')) {
         if (flightProviderError) {
           groundingParts.push(
@@ -672,6 +949,7 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
           ' Keep it under 4 sentences.',
       };
 
+      yield { type: 'activity', kind: 'writing' };
       const finalStream = await getOpenAI().chat.completions.create(
         {
           model: config.model,
@@ -699,6 +977,7 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
   }
 
   // ── Plain streaming path (no tools) ───────────────────────
+  yield { type: 'activity', kind: 'thinking' };
   const stream = await getOpenAI().chat.completions.create(
     {
       model: config.model,
@@ -780,7 +1059,8 @@ export async function analyzeImage(
     messages: [
       {
         role: 'system',
-        content: 'You are a helpful assistant. Return ONLY valid JSON.',
+        content:
+          'You are a helpful assistant. Respond with ONLY valid JSON matching the user\'s schema. No prose, no code fences, no apologies.',
       },
       {
         role: 'user',
@@ -794,12 +1074,59 @@ export async function analyzeImage(
     max_tokens: 1000,
   });
 
-  const text = response.choices?.[0]?.message?.content ?? '{}';
-  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, text];
-  try {
-    return JSON.parse(jsonMatch[1]!.trim());
-  } catch (err: any) {
-    console.error('Failed to parse image analysis JSON:', err.message, '\nRaw text:', text);
-    return { error: 'Failed to parse AI response', raw: text };
+  const text = response.choices?.[0]?.message?.content ?? '';
+  return parseAnalysisResponse(text);
+}
+
+/**
+ * Parse the model's reply for image-analysis endpoints.
+ *
+ * Models occasionally refuse on photos of real people with a prose apology
+ * ("I'm sorry, but I can't help..."). That's not a JSON error — it's a
+ * refusal. Return a structured `{ refused: true, ... }` result instead of
+ * throwing / spamming stderr. Also tolerates fenced and unfenced JSON.
+ *
+ * Exported for unit tests.
+ */
+export function parseAnalysisResponse(raw: string): Record<string, unknown> {
+  const text = (raw ?? '').trim();
+  if (!text) return { error: 'Empty AI response', raw: '' };
+
+  // 1. Prefer fenced JSON block if present.
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const fencedCandidate = fenced?.[1]?.trim();
+  if (fencedCandidate) {
+    try {
+      return JSON.parse(fencedCandidate);
+    } catch {
+      // fall through
+    }
   }
+
+  // 2. Try parsing the whole body (common when we asked for JSON-only).
+  try {
+    return JSON.parse(text);
+  } catch {
+    // fall through
+  }
+
+  // 3. Extract the first balanced `{...}` block and try that.
+  const objStart = text.indexOf('{');
+  const objEnd = text.lastIndexOf('}');
+  if (objStart >= 0 && objEnd > objStart) {
+    try {
+      return JSON.parse(text.slice(objStart, objEnd + 1));
+    } catch {
+      // fall through
+    }
+  }
+
+  // 4. Refusal heuristic — don't log as an error, the model just declined.
+  if (/^\s*(?:i'?m\s+sorry|i\s+can('|no)?t|i\s+cannot|sorry,?\s+but)/i.test(text)) {
+    return { refused: true, reason: text.slice(0, 500), raw: text };
+  }
+
+  // 5. True parse failure.
+  console.error('Failed to parse image analysis JSON. Raw text:', text.slice(0, 500));
+  return { error: 'Failed to parse AI response', raw: text };
 }

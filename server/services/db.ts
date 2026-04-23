@@ -1,4 +1,5 @@
 import pg from 'pg';
+// import { errorMessage } from '../utils/errors.js';
 
 const { Pool } = pg;
 
@@ -65,6 +66,45 @@ export const DB_MIGRATION_STEPS = {
 
     CREATE INDEX IF NOT EXISTS idx_reminders_user_status_due
       ON reminders (user_id, status, due_at);
+
+    CREATE TABLE IF NOT EXISTS saved_items (
+      id           TEXT PRIMARY KEY,
+      user_id      TEXT NOT NULL,
+      kind         TEXT NOT NULL CHECK (
+                     kind IN ('hotel', 'flight', 'place', 'studio', 'reminder')
+                   ),
+      external_id  TEXT NOT NULL,
+      data         JSONB NOT NULL,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, kind, external_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_saved_items_user_kind
+      ON saved_items (user_id, kind, created_at DESC);
+
+    -- Phase 1 of the Style agent: persistent wardrobe. Tags that the outfit
+    -- builder relies on (category/season/occasion/warmth) live as real columns
+    -- so we can query + index them; free-form extras go in attributes JSONB.
+    CREATE TABLE IF NOT EXISTS wardrobe_items (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      image_url   TEXT,
+      category    TEXT NOT NULL CHECK (
+                    category IN ('top','bottom','dress','outerwear','shoes','accessory','activewear')
+                  ),
+      subtype     TEXT,
+      color       TEXT,
+      color_hex   TEXT,
+      pattern     TEXT,
+      seasons     TEXT[] NOT NULL DEFAULT '{}'::text[],
+      occasions   TEXT[] NOT NULL DEFAULT '{}'::text[],
+      warmth      TEXT CHECK (warmth IS NULL OR warmth IN ('light','medium','heavy')),
+      attributes  JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_user_category
+      ON wardrobe_items (user_id, category, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS password_reset_tokens (
       id          TEXT PRIMARY KEY,
@@ -152,16 +192,125 @@ export const DB_MIGRATION_STEPS = {
     -- If legacy rows have NULL emails, a UNIQUE index is still valid in Postgres (multiple NULLs allowed).
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users (email);
   `,
+  /**
+   * Legacy schemas may already have a `wardrobe_items` table with different
+   * column types (e.g. bigint user_id) or missing columns. Make it compatible
+   * with the current app contract without dropping data.
+   */
+  migrateWardrobeItemsSchema: `
+    -- Legacy schemas may have an incompatible FK (e.g. bigint user_id → users.telegram_id).
+    -- Drop any FK constraints on wardrobe_items.user_id so we can fix types/columns.
+    DO $$
+    DECLARE c RECORD;
+    BEGIN
+      FOR c IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'wardrobe_items'::regclass
+          AND contype = 'f'
+          AND pg_get_constraintdef(oid) LIKE '%(user_id)%'
+      LOOP
+        EXECUTE format('ALTER TABLE wardrobe_items DROP CONSTRAINT IF EXISTS %I', c.conname);
+      END LOOP;
+    END $$;
+
+    -- Add missing columns first (safe no-ops when already present).
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS image_url TEXT;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS category TEXT;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS subtype TEXT;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS color TEXT;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS color_hex TEXT;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS pattern TEXT;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS seasons TEXT[] NOT NULL DEFAULT '{}'::text[];
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS occasions TEXT[] NOT NULL DEFAULT '{}'::text[];
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS warmth TEXT;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS attributes JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+    -- Coerce id/user_id to TEXT when legacy tables used numeric ids.
+    DO $$
+    DECLARE id_type TEXT;
+    DECLARE user_type TEXT;
+    BEGIN
+      SELECT data_type INTO id_type
+      FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='wardrobe_items' AND column_name='id';
+
+      IF id_type IS NOT NULL AND id_type <> 'text' THEN
+        EXECUTE 'ALTER TABLE wardrobe_items ALTER COLUMN id TYPE TEXT USING id::text';
+      END IF;
+
+      SELECT data_type INTO user_type
+      FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='wardrobe_items' AND column_name='user_id';
+
+      IF user_type IS NOT NULL AND user_type <> 'text' THEN
+        EXECUTE 'ALTER TABLE wardrobe_items ALTER COLUMN user_id TYPE TEXT USING user_id::text';
+      END IF;
+    END $$;
+
+    -- Backfill category if it was nullable historically.
+    UPDATE wardrobe_items SET category = 'top' WHERE category IS NULL;
+
+    -- Enforce current constraints going forward.
+    ALTER TABLE wardrobe_items ALTER COLUMN id SET NOT NULL;
+    ALTER TABLE wardrobe_items ALTER COLUMN user_id SET NOT NULL;
+    ALTER TABLE wardrobe_items ALTER COLUMN category SET NOT NULL;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'wardrobe_items'::regclass
+          AND contype = 'c'
+          AND conname = 'wardrobe_items_category_check'
+      ) THEN
+        ALTER TABLE wardrobe_items
+          ADD CONSTRAINT wardrobe_items_category_check
+          CHECK (category IN ('top','bottom','dress','outerwear','shoes','accessory','activewear'));
+      END IF;
+    END $$;
+
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_user_category
+      ON wardrobe_items (user_id, category, created_at DESC);
+
+    -- Re-add the correct FK (TEXT → users.id TEXT). Only add when missing.
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'wardrobe_items'::regclass
+          AND contype = 'f'
+          AND conname = 'wardrobe_items_user_id_fk'
+      ) THEN
+        ALTER TABLE wardrobe_items
+          ADD CONSTRAINT wardrobe_items_user_id_fk
+          FOREIGN KEY (user_id) REFERENCES users(id)
+          ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `,
 } as const;
 
 /** Run the initial migration to create tables if they don't exist. */
 export async function initDb(): Promise<void> {
-  const client = await pool.connect();
+  let client: pg.PoolClient | null = null;
+  try {
+    client = await pool.connect();
+  } catch (err: any) {
+    const msg = err?.message ? String(err.message) : String(err);
+    console.error('DB connection error:', msg);
+    console.warn('  ⚠ Running without database — falling back to in-memory storage');
+    return;
+  }
   try {
     await client.query('BEGIN');
     await client.query(DB_MIGRATION_STEPS.ensureUuidExtension);
     await client.query(DB_MIGRATION_STEPS.createTables);
     await client.query(DB_MIGRATION_STEPS.migrateUsersIdColumn);
+    await client.query(DB_MIGRATION_STEPS.migrateWardrobeItemsSchema);
     await client.query('COMMIT');
     console.log('  ✓ Database tables ready');
   } catch (err: any) {

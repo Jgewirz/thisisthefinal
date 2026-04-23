@@ -119,6 +119,12 @@ router.post('/', async (req: Request, res: Response) => {
         res.write(`data: ${JSON.stringify({ token: evt.text })}\n\n`);
       } else if (evt.type === 'card') {
         res.write(`data: ${JSON.stringify({ card: evt.card })}\n\n`);
+      } else if (evt.type === 'activity') {
+        // Transient status events (e.g. "Searching Google Places…") that let
+        // the client render a live thinking-indicator while tools are running.
+        res.write(
+          `data: ${JSON.stringify({ activity: { kind: evt.kind, detail: evt.detail } })}\n\n`
+        );
       }
     }
 

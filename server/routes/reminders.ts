@@ -8,10 +8,16 @@ import {
   type ReminderStatus,
 } from '../services/reminders.js';
 import { idempotency } from '../middleware/idempotency.js';
+import { errorMessage, errorStack } from '../utils/errors.js';
+import { paramString } from '../utils/paramString.js';
 
 const router = Router();
 
 const VALID_STATUSES: ReminderStatus[] = ['pending', 'fired', 'completed', 'dismissed'];
+
+// Avoid log spam when the reminder poller hits a broken backend (e.g. DB down).
+const LOG_THROTTLE_MS = 30_000;
+let lastListErrAt = 0;
 
 // GET /api/reminders?status=pending&due=1
 // - status: single or comma-separated list. Defaults to all.
@@ -34,8 +40,17 @@ router.get('/', async (req: Request, res: Response) => {
     });
     res.json({ reminders });
   } catch (err: any) {
-    console.error('List reminders error:', err.message);
-    res.status(500).json({ error: 'Failed to list reminders' });
+    const now = Date.now();
+    if (now - lastListErrAt > LOG_THROTTLE_MS) {
+      lastListErrAt = now;
+      const msg = errorMessage(err);
+      const stack = errorStack(err);
+      console.error('List reminders error:', msg);
+      if (stack) console.error(stack);
+    }
+    // Fail-open for the poller/UI: reminders are non-critical, so return an
+    // empty list instead of breaking the app (and spamming logs).
+    res.json({ reminders: [] });
   }
 });
 
@@ -69,7 +84,11 @@ router.post('/', idempotency(), async (req: Request, res: Response) => {
 
 // PATCH /api/reminders/:id — update status (acknowledge, complete, dismiss)
 router.patch('/:id', async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = paramString(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'reminder id required' });
+    return;
+  }
   const { status } = req.body as { status?: ReminderStatus };
   if (!status || !VALID_STATUSES.includes(status)) {
     res.status(400).json({ error: `status must be one of ${VALID_STATUSES.join('|')}` });
@@ -90,8 +109,13 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
 // DELETE /api/reminders/:id
 router.delete('/:id', async (req: Request, res: Response) => {
+  const id = paramString(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'reminder id required' });
+    return;
+  }
   try {
-    const ok = await deleteReminder(req.params.id, req.user!.id);
+    const ok = await deleteReminder(id, req.user!.id);
     if (!ok) {
       res.status(404).json({ error: 'reminder not found' });
       return;

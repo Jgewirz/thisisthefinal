@@ -24,7 +24,16 @@ describe('OpenAI auth env', () => {
 
     const mod = await import('../services/anthropic.js');
     const gen = mod.streamChat('fitness', [{ role: 'user', content: 'hi' }]);
-    await expect(gen.next()).rejects.toThrow(/OpenAI authentication is not configured/i);
+    // The generator may yield transient activity events before it actually
+    // reaches into OpenAI (e.g. "thinking"). The contract we care about is
+    // that invocation *eventually* rejects with a helpful auth error rather
+    // than crashing at module load. Drain up to a few events looking for it.
+    const consume = async () => {
+      for (let i = 0; i < 10; i++) {
+        await gen.next();
+      }
+    };
+    await expect(consume()).rejects.toThrow(/OpenAI authentication is not configured/i);
 
     if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
   });

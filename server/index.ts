@@ -5,6 +5,9 @@ import chatRouter from './routes/chat.js';
 import styleRouter from './routes/style.js';
 import authRouter from './routes/auth.js';
 import remindersRouter from './routes/reminders.js';
+import statusRouter from './routes/status.js';
+import savedRouter from './routes/saved.js';
+import wardrobeRouter from './routes/wardrobe.js';
 import { initDb } from './services/db.js';
 import { getKV } from './services/kv.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -62,6 +65,9 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', agents: ['style', 'travel', 'fitness', 'lifestyle'] });
 });
 
+// Provider status (public) — booleans only, for the per-agent UI badge.
+app.use('/api/status', statusRouter);
+
 // Auth routes (public) — rate-limit the reset endpoints specifically.
 app.use('/api/auth/forgot-password', authResetLimiter);
 app.use('/api/auth/reset-password', authResetLimiter);
@@ -70,8 +76,12 @@ app.use('/api/auth', authRouter);
 // Protected routes — require JWT
 app.use('/api/chat', authMiddleware, chatLimiter, chatRouter);
 app.use('/api/style/analyze', authMiddleware, imageLimiter);
+// Wardrobe must mount before the generic /api/style prefix so Express routes
+// /api/style/wardrobe/* here instead of falling through to styleRouter.
+app.use('/api/style/wardrobe', authMiddleware, chatLimiter, wardrobeRouter);
 app.use('/api/style', authMiddleware, styleRouter);
 app.use('/api/reminders', authMiddleware, chatLimiter, remindersRouter);
+app.use('/api/saved', authMiddleware, chatLimiter, savedRouter);
 
 // ── Global error handler ────────────────────────────────────
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -95,6 +95,16 @@ describe('reminders routes', () => {
     expect(svc.listReminders).not.toHaveBeenCalled();
   });
 
+  it('GET /?due=1 fail-opens with [] when service throws (prevents poller spam)', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Some failures throw non-Error values; the route should still log a stable message.
+    svc.getDueReminders.mockRejectedValueOnce({});
+    const res = await invoke('GET', '/?due=1');
+    expect(res.status).toBe(200);
+    expect(res.body.reminders).toEqual([]);
+    expect(spy).toHaveBeenCalled();
+  });
+
   it('GET / filters by comma-separated status list', async () => {
     svc.listReminders.mockResolvedValue([]);
     await invoke('GET', '/?status=pending,fired');

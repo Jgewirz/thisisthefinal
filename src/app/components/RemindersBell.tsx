@@ -64,22 +64,28 @@ export function RemindersBell() {
     await deleteReminder(id);
   };
 
+  const bellColor = unread > 0 ? 'var(--accent-lifestyle, #f59e0b)' : 'var(--accent-lifestyle, #f59e0b)';
+
   return (
     <div className="relative" ref={popRef}>
       <button
         aria-label="Reminders"
         onClick={() => setOpen((v) => !v)}
-        className="relative p-2 rounded-full hover:opacity-80 transition"
-        style={{ color: 'var(--text-primary)' }}
+        className="relative flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-xl transition-all active:scale-90 hover:bg-[var(--bg-hover)]"
       >
-        <Bell size={20} />
-        {unread > 0 && (
-          <span
-            className="absolute top-1 right-1 w-2.5 h-2.5 rounded-full"
-            style={{ backgroundColor: 'var(--accent-fitness, #f43f5e)' }}
-            aria-label={`${unread} due reminders`}
-          />
-        )}
+        <div className="relative">
+          <Bell size={17} style={{ color: bellColor }} />
+          {unread > 0 && (
+            <span
+              className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-[var(--bg-surface)]"
+              style={{ backgroundColor: '#ef4444' }}
+              aria-label={`${unread} due reminders`}
+            />
+          )}
+        </div>
+        <span className="text-[9px] font-medium leading-none" style={{ color: bellColor }}>
+          {unread > 0 ? `${unread} due` : 'Reminders'}
+        </span>
       </button>
 
       {open && (

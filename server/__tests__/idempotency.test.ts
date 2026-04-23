@@ -131,6 +131,43 @@ describe('idempotency middleware', () => {
     expect(r2.body).toEqual({ n: 2 });
   });
 
+  it('does NOT cache 4xx responses — retry with a corrected body is allowed', async () => {
+    // Handler fails the first time (invalid field), succeeds with corrected body.
+    const handler = vi.fn((req: any, res: any) => {
+      if (req.body.imageUrl?.length > 10) {
+        return res.status(400).json({ error: 'imageUrl: too long' });
+      }
+      return res.status(201).json({ ok: true });
+    });
+
+    const base = {
+      user,
+      header: (h: string) => (h.toLowerCase() === 'idempotency-key' ? 'k1' : undefined),
+    };
+    const r1 = await runHandler({ ...base, body: { imageUrl: 'x'.repeat(50) } }, handler);
+    expect(r1.statusCode).toBe(400);
+
+    // Client fixes the payload and retries. Must not be blocked by 409.
+    const r2 = await runHandler({ ...base, body: { imageUrl: 'short' } }, handler);
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(r2.statusCode).toBe(201);
+    expect(r2.body).toEqual({ ok: true });
+  });
+
+  it('does NOT cache 5xx responses either', async () => {
+    const handler = vi.fn((_: any, res: any) => res.status(500).json({ error: 'boom' }));
+    const base = {
+      user,
+      header: (h: string) => (h.toLowerCase() === 'idempotency-key' ? 'k2' : undefined),
+      body: {},
+    };
+    const r1 = await runHandler(base, handler);
+    const r2 = await runHandler(base, handler);
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(r1.statusCode).toBe(500);
+    expect(r2.statusCode).toBe(500);
+  });
+
   it('rejects keys that are too long', async () => {
     const handler = vi.fn();
     const req = {

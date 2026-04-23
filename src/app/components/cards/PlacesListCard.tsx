@@ -1,5 +1,6 @@
 import { ExternalLink, MapPin, Star } from 'lucide-react';
 import type { PlaceResult } from '../../types';
+import { SaveButton } from '../SaveButton';
 
 interface PlacesListCardProps {
   data: { query: string; places: PlaceResult[] };
@@ -125,6 +126,23 @@ export function PlacesListCard({ data, agentColor }: PlacesListCardProps) {
                   <ExternalLink size={11} />
                 </a>
               )}
+              <div className="ml-auto">
+                <SaveButton
+                  kind="place"
+                  externalId={p.id || p.name}
+                  data={{
+                    name: p.name,
+                    address: p.address,
+                    rating: p.rating,
+                    priceLevel: p.priceLevel,
+                    googleMapsUri: p.googleMapsUri,
+                    websiteUri: p.websiteUri,
+                  }}
+                  agentColor={agentColor}
+                  size={14}
+                  label={`place ${p.name}`}
+                />
+              </div>
             </div>
           </li>
         ))}

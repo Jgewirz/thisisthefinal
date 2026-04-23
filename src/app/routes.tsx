@@ -4,6 +4,8 @@ import { ChatView } from "./components/ChatView";
 import { LoginScreen } from "./components/LoginScreen";
 import { ForgotPasswordScreen } from "./components/ForgotPasswordScreen";
 import { ResetPasswordScreen } from "./components/ResetPasswordScreen";
+import { WardrobeScreen } from "./components/WardrobeScreen";
+import { OutfitBuilderScreen } from "./components/OutfitBuilderScreen";
 
 export const router = createBrowserRouter([
   {
@@ -41,6 +43,14 @@ export const router = createBrowserRouter([
       { 
         path: "lifestyle", 
         Component: () => <ChatView agentId="lifestyle" />
+      },
+      {
+        path: "wardrobe",
+        Component: WardrobeScreen,
+      },
+      {
+        path: "outfits/build",
+        Component: OutfitBuilderScreen,
       },
     ],
   },

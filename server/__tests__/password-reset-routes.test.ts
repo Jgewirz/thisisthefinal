@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 const getUserByEmailMock = vi.fn();
@@ -20,6 +20,11 @@ vi.mock('../services/passwordReset.js', () => ({
   generateResetToken: () => 'raw-token-fixed',
 }));
 
+interface InvokeResult {
+  status: number;
+  body: any;
+}
+
 beforeEach(() => {
   process.env.JWT_SECRET = 'x'.repeat(48);
   process.env.NODE_ENV = 'development';
@@ -28,14 +33,6 @@ beforeEach(() => {
   createPasswordResetTokenMock.mockReset();
   consumePasswordResetTokenMock.mockReset();
 });
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
-interface InvokeResult {
-  status: number;
-  body: any;
-}
 
 async function invoke(
   method: string,

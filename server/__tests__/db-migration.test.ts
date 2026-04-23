@@ -38,6 +38,11 @@ describe('initDb migration', async () => {
     expect(sqlCalls.join('\n')).toContain('UPDATE users SET telegram_id');
     expect(sqlCalls.join('\n')).toContain('ALTER TABLE users ADD COLUMN IF NOT EXISTS id');
     expect(sqlCalls.join('\n')).toContain('UPDATE users SET id = gen_random_uuid()::text');
+    // Wardrobe schema drift: legacy tables may have bigint user_id and missing columns.
+    expect(sqlCalls.join('\n')).toContain('DROP CONSTRAINT');
+    expect(sqlCalls.join('\n')).toContain('ALTER TABLE wardrobe_items ADD COLUMN IF NOT EXISTS subtype');
+    expect(sqlCalls.join('\n')).toContain('ALTER TABLE wardrobe_items ALTER COLUMN user_id TYPE TEXT');
+    expect(sqlCalls.join('\n')).toContain('FOREIGN KEY (user_id) REFERENCES users(id)');
   });
 });
 

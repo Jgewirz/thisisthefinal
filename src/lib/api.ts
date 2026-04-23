@@ -1,8 +1,14 @@
-import type { AgentId, Message, RichCard } from '../app/types';
+import type { AgentId, Message } from '../app/types';
 import { useChatStore } from '../stores/chat';
 import { useStyleStore } from '../stores/style';
 import { useAuthStore } from '../stores/auth';
 import { useLocationStore } from '../stores/location';
+import {
+  formatFailureAsMessage,
+  interpretAnalysisResponse,
+  pickAnalysisType,
+  type StyleAnalysisResult,
+} from './styleAnalysis';
 
 // ── Authenticated fetch wrapper ─────────────────────────────
 
@@ -52,12 +58,18 @@ function toApiMessages(messages: Message[]) {
   });
 }
 
-/** Read an SSE stream and push tokens into the store */
-async function readStream(res: Response, agentId: AgentId) {
+/**
+ * Read an SSE stream and push tokens into the store.
+ * Returns the classified agent ID as reported by the server (may differ from
+ * `agentId` when the caller is the "all" tab and the server routes to a
+ * specialist).
+ */
+async function readStream(res: Response, agentId: AgentId): Promise<AgentId> {
   const store = useChatStore.getState();
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let classifiedAgent: AgentId = agentId;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -72,14 +84,22 @@ async function readStream(res: Response, agentId: AgentId) {
       try {
         const data = JSON.parse(line.slice(6));
         if (data.classifiedAgent) {
+          classifiedAgent = data.classifiedAgent as AgentId;
           // Update the bot message badge to show the classified specialist
-          store.updateLastBotAgentId(agentId, data.classifiedAgent as AgentId);
+          store.updateLastBotAgentId(agentId, classifiedAgent);
         }
         if (data.token) {
           store.appendToLastBot(agentId, data.token);
         }
         if (data.card && typeof data.card === 'object' && data.card.type) {
           store.setRichCardOnLastBot(agentId, data.card);
+        }
+        if (data.activity && typeof data.activity === 'object' && data.activity.kind) {
+          store.setActivity(agentId, {
+            kind: data.activity.kind,
+            detail: data.activity.detail,
+            startedAt: Date.now(),
+          });
         }
         if (data.error) {
           store.appendToLastBot(agentId, `\n\n[Error: ${data.error}]`);
@@ -89,6 +109,8 @@ async function readStream(res: Response, agentId: AgentId) {
       }
     }
   }
+
+  return classifiedAgent;
 }
 
 /**
@@ -115,46 +137,67 @@ function createThumbnail(dataUrl: string, maxWidth = 200): Promise<string> {
 }
 
 /**
- * Persist a message to the database (fire-and-forget).
+ * Persist a message to the database.
  * If the message has a base64 image, shrink it to a thumbnail first.
+ * Returns whether the server accepted the write (local store is still authoritative for UI).
  */
-async function persistMessage(msg: Message) {
+async function persistMessage(msg: Message): Promise<boolean> {
   let imageUrl = msg.imageUrl;
   if (imageUrl?.startsWith('data:')) {
     imageUrl = await createThumbnail(imageUrl);
   }
-  authFetch('/api/chat/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      // Message id is stable per client-side message, so reuse it as the
-      // idempotency key. Safe on retry / double-clicks / HMR re-renders.
-      'Idempotency-Key': `msg:${msg.id}`,
-    },
-    body: JSON.stringify({
-      id: msg.id,
-      agentId: msg.agentId,
-      type: msg.type,
-      text: msg.text,
-      imageUrl,
-      richCard: msg.richCard,
-    }),
-  }).catch(() => {}); // silent fail — local store is primary
+  // A single chat turn may be persisted more than once: first with just streamed
+  // text, then again after an async rich card (e.g. /api/style/analyze) is
+  // attached. The Idempotency-Key must therefore bucket by *payload variant*,
+  // not just the message id, or the second write trips the server's
+  // "same key, different body" guard (409). Server-side saveChatMessage()
+  // already does INSERT ... ON CONFLICT (id) DO UPDATE, so both writes
+  // correctly converge to the same row.
+  const variant = msg.richCard ? 'with-card' : 'no-card';
+  try {
+    const res = await authFetch('/api/chat/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': `msg:${msg.id}:${variant}`,
+      },
+      body: JSON.stringify({
+        id: msg.id,
+        agentId: msg.agentId,
+        type: msg.type,
+        text: msg.text,
+        imageUrl,
+        richCard: msg.richCard,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
+
+// Prevents concurrent loadChatHistory calls for the same agent (e.g. React
+// double-effect in dev, rapid navigation, or HMR). Without this guard two
+// concurrent loads can both pass the historyLoaded=false check, then the
+// second one's setMessages call silently clobbers the first.
+const _loadInProgress = new Set<AgentId>();
 
 /**
  * Load chat history from the database for a given agent.
+ * Uses an atomic Zustand setState updater so the merge with any optimistic
+ * messages that were added while the fetch was in-flight is race-free.
  */
 export async function loadChatHistory(agentId: AgentId): Promise<void> {
-  const store = useChatStore.getState();
-  if (store.agents[agentId].historyLoaded) return; // already loaded
+  if (useChatStore.getState().agents[agentId].historyLoaded) return;
+  if (_loadInProgress.has(agentId)) return;
+  _loadInProgress.add(agentId);
 
   try {
-    const res = await authFetch(`/api/chat/history?agentId=${agentId}`);
+    const res = await authFetch(`/api/chat/history?agentId=${agentId}&limit=200`);
     if (!res.ok) return;
     const { messages } = await res.json();
 
-    if (messages && messages.length > 0) {
+    if (Array.isArray(messages) && messages.length > 0) {
       const parsed: Message[] = messages.map((m: any) => ({
         id: m.id,
         type: m.type as 'user' | 'bot',
@@ -164,12 +207,36 @@ export async function loadChatHistory(agentId: AgentId): Promise<void> {
         imageUrl: m.image_url || undefined,
         richCard: m.rich_card || undefined,
       }));
-      store.setMessages(agentId, parsed);
+
+      // Merge inside the Zustand updater so read + write is one atomic
+      // operation — no window where an interleaved addMessage can be lost.
+      useChatStore.setState((state) => {
+        const existing = state.agents[agentId].messages;
+        let next: Message[];
+        if (existing.length === 0) {
+          next = parsed;
+        } else {
+          // existing (in-memory) wins over DB for the same id — the in-memory
+          // copy may have a richer state (e.g. richCard from style analysis).
+          const byId = new Map<string, Message>();
+          for (const m of [...parsed, ...existing]) byId.set(m.id, m);
+          next = Array.from(byId.values()).sort(
+            (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+          );
+        }
+        return {
+          agents: {
+            ...state.agents,
+            [agentId]: { ...state.agents[agentId], messages: next },
+          },
+        };
+      });
     }
   } catch {
-    // silent fail
+    // silent fail — UI keeps working; user can reload if needed
   } finally {
-    store.setHistoryLoaded(agentId);
+    _loadInProgress.delete(agentId);
+    useChatStore.getState().setHistoryLoaded(agentId);
   }
 }
 
@@ -198,8 +265,7 @@ export async function sendMessage(
   };
   store.addMessage(agentId, userMsg);
 
-  // Persist user message to DB (fire-and-forget)
-  persistMessage(userMsg);
+  await persistMessage(userMsg);
 
   // Create placeholder bot message
   const botMsg: Message = {
@@ -246,7 +312,7 @@ export async function sendMessage(
       throw new Error(`API error: ${res.status}`);
     }
 
-    await readStream(res, agentId);
+    const classifiedAgent = await readStream(res, agentId);
 
     // Rich cards are now ground-truth only:
     //   - `placesList` cards come from the server via SSE (Google Places API)
@@ -256,21 +322,42 @@ export async function sendMessage(
     const finalMessages = store.getMessages(agentId);
     const lastBot = finalMessages[finalMessages.length - 1];
 
-    if (lastBot && lastBot.type === 'bot' && lastBot.text) {
-      persistMessage(lastBot);
+    // Persist every assistant turn: text-only, card-only (Places/Flights/etc.), or both.
+    if (lastBot?.type === 'bot') {
+      await persistMessage(lastBot);
     }
 
-    // If analysis was running, wait for it and attach the card
+    // Cross-tab population: when the user types from the "all" tab and the
+    // server classifies the message as a specialist (e.g. "travel"), the user
+    // message is persisted under agent_id="all" but the bot reply lands under
+    // agent_id="travel". After a refresh the Travel tab therefore shows the
+    // bot reply without the user's question. Fix: also persist (and mirror
+    // in-memory) the user message under the classified agent.
+    if (agentId === 'all' && classifiedAgent !== 'all') {
+      const crossUserMsg: Message = { ...userMsg, agentId: classifiedAgent };
+      // Add to the specialist's in-memory store (dedup: skip if already present)
+      const inSpecialist = store.getMessages(classifiedAgent);
+      if (!inSpecialist.some((m) => m.id === userMsg.id)) {
+        store.addMessage(classifiedAgent, crossUserMsg);
+      }
+      // Save to DB under the classified agent so the specialist tab survives refresh
+      await persistMessage(crossUserMsg);
+    }
+
+    // If analysis was running, wait for it. On success we attach the rich
+    // card; on refusal / parse failure we append a friendly bot message with
+    // retry suggestions so the user isn't left wondering why nothing happened.
     if (analysisPromise) {
-      const richCard = await analysisPromise;
-      if (richCard) {
-        store.setRichCardOnLastBot(agentId, richCard);
-        // Re-persist the bot message now that it has a rich card
-        const updatedMessages = store.getMessages(agentId);
-        const updatedBot = updatedMessages[updatedMessages.length - 1];
-        if (updatedBot && updatedBot.type === 'bot') {
-          persistMessage(updatedBot);
-        }
+      const outcome = await analysisPromise;
+      if (outcome.kind === 'card') {
+        store.setRichCardOnLastBot(agentId, outcome.card);
+      } else if (outcome.kind === 'refused' || outcome.kind === 'error') {
+        store.appendToLastBot(agentId, `\n\n${formatFailureAsMessage(outcome)}`);
+      }
+      const updatedMessages = store.getMessages(agentId);
+      const updatedBot = updatedMessages[updatedMessages.length - 1];
+      if (updatedBot?.type === 'bot') {
+        await persistMessage(updatedBot);
       }
     }
   } catch (err: any) {
@@ -280,91 +367,99 @@ export async function sendMessage(
         ? 'Sorry, I had trouble connecting. Please try again!'
         : `Something went wrong: ${err.message}`
     );
+    const afterErr = store.getMessages(agentId);
+    const errBot = afterErr[afterErr.length - 1];
+    if (errBot?.type === 'bot') {
+      await persistMessage(errBot);
+    }
   } finally {
     store.setStreaming(agentId, false);
   }
 }
 
 /**
- * Determine the analysis type from the user's text and run /api/style/analyze.
- * Returns a RichCard if successful, null otherwise.
+ * Run /api/style/analyze and return a structured result the caller can act on:
+ *   - `card` — attach to the bot message as a rich card
+ *   - `refused` / `error` — surface a friendly message with retry suggestions
+ *   - `none` — succeeded but produces no card (e.g. clothing_tag)
  */
 async function runStyleAnalysis(
   imageBase64: string,
   userText: string,
-  agentId: AgentId
-): Promise<RichCard | null> {
-  // Decide analysis type from user intent
-  const lower = userText.toLowerCase();
-  let type: 'skin_tone' | 'outfit_rating' | 'clothing_tag' = 'skin_tone';
-  if (lower.includes('outfit') || lower.includes('rate') || lower.includes('wearing')) {
-    type = 'outfit_rating';
-  } else if (
-    lower.includes('wardrobe') ||
-    lower.includes('clothing') ||
-    lower.includes('tag') ||
-    lower.includes('item')
-  ) {
-    type = 'clothing_tag';
-  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _agentId: AgentId
+): Promise<StyleAnalysisResult> {
+  const type = pickAnalysisType(userText);
 
+  let result: unknown;
   try {
     const res = await authFetch('/api/style/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: imageBase64, type }),
     });
-
-    if (!res.ok) return null;
-    const { result } = await res.json();
-
-    if (type === 'skin_tone' && result?.season && result?.bestColors) {
-      // Save to style profile
-      useStyleStore.getState().setSkinTone({
-        depth: result.depth,
-        undertone: result.undertone,
-        season: result.season,
-        bestColors: result.bestColors,
-        bestMetals: result.bestMetals,
-      });
-
+    if (!res.ok) {
+      if (res.status === 413) {
+        return {
+          kind: 'error',
+          message: 'That photo is too large (max 8 MB). Try compressing or resizing it.',
+          suggestions: ['Export at a lower resolution (e.g. 1500px wide).'],
+        };
+      }
       return {
-        type: 'colorSeason',
-        data: {
-          season: result.season,
-          colors: result.bestColors,
-          metals: result.bestMetals,
-        },
+        kind: 'error',
+        message: 'Photo analysis service is unavailable right now.',
+        suggestions: ['Try again in a moment, or use a different photo.'],
       };
     }
+    const json = await res.json();
+    result = json?.result;
+  } catch {
+    return {
+      kind: 'error',
+      message: 'Network problem while analyzing the photo.',
+      suggestions: ['Check your connection and try again.'],
+    };
+  }
 
-    if (type === 'outfit_rating' && result?.score != null) {
-      return {
-        type: 'outfit',
-        data: result,
-      };
-    }
+  const outcome = interpretAnalysisResponse(type, result);
 
-    if (type === 'clothing_tag' && result?.category) {
-      // Auto-add to wardrobe
+  // Side-effects for successful skin_tone / clothing_tag flows — kept here so
+  // interpretAnalysisResponse stays pure and trivially testable.
+  if (
+    outcome.kind === 'card' &&
+    outcome.card.type === 'colorSeason' &&
+    result &&
+    typeof result === 'object'
+  ) {
+    const r = result as Record<string, unknown>;
+    useStyleStore.getState().setSkinTone({
+      depth: typeof r.depth === 'string' ? r.depth : '',
+      undertone: typeof r.undertone === 'string' ? r.undertone : '',
+      season: typeof r.season === 'string' ? r.season : '',
+      bestColors: Array.isArray(r.bestColors) ? (r.bestColors as string[]) : [],
+      bestMetals: typeof r.bestMetals === 'string' ? r.bestMetals : '',
+    });
+  }
+  if (type === 'clothing_tag' && outcome.kind === 'none' && result && typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    if (typeof r.category === 'string') {
       useStyleStore.getState().addWardrobeItem({
         id: crypto.randomUUID(),
         imageUrl: imageBase64,
-        category: result.category,
-        color: result.color,
-        colorHex: result.colorHex,
-        style: result.style,
-        seasons: result.seasons,
-        occasions: result.occasions,
-        pairsWith: result.pairsWith,
+        category: r.category,
+        color: typeof r.color === 'string' ? r.color : '',
+        colorHex: typeof r.colorHex === 'string' ? r.colorHex : '',
+        style: typeof r.style === 'string' ? r.style : '',
+        seasons: Array.isArray(r.seasons) ? (r.seasons as string[]) : [],
+        occasions: Array.isArray(r.occasions) ? (r.occasions as string[]) : [],
+        pairsWith: Array.isArray(r.pairsWith) ? (r.pairsWith as string[]) : [],
         addedAt: new Date().toISOString(),
       });
     }
-
-    return null;
-  } catch {
-    return null;
   }
+
+  return outcome;
 }
 
 // ── Conversation Management ─────────────────────────────────

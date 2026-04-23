@@ -14,6 +14,11 @@ vi.mock('../services/amadeusHotels.js', () => ({
   searchHotels: searchHotelsMock,
 }));
 
+const searchHotelsFallbackMock = vi.fn();
+vi.mock('../services/serpHotels.js', () => ({
+  searchHotelsFallback: searchHotelsFallbackMock,
+}));
+
 // Stub sibling services so their imports resolve.
 vi.mock('../services/places.js', () => ({
   searchPlaces: vi.fn(),
@@ -33,6 +38,7 @@ beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key';
   createMock.mockReset();
   searchHotelsMock.mockReset();
+  searchHotelsFallbackMock.mockReset();
 });
 
 describe('streamChat — search_hotels tool calling', () => {
@@ -246,6 +252,177 @@ describe('streamChat — search_hotels tool calling', () => {
       sysMsgs.some((m: any) =>
         /temporarily unavailable|hotel-offers provider/i.test(m.content ?? '')
       )
+    ).toBe(true);
+  });
+
+  it('falls back to SerpAPI when Amadeus throws and returns its offers in the hotelList card', async () => {
+    searchHotelsMock.mockRejectedValue(new Error('Amadeus 500'));
+    searchHotelsFallbackMock.mockResolvedValue([
+      {
+        id: 'serp_h_0',
+        hotelId: 'serp_h_0',
+        name: 'Hotel de Ville',
+        cityName: 'Paris',
+        address: '1 Rue de Rivoli, Paris',
+        rating: 4,
+        priceTotal: '320',
+        currency: 'EUR',
+        checkIn: '2026-05-01',
+        checkOut: '2026-05-05',
+        bookingUrl: 'https://google.com/travel/hotels/entity/hdv',
+      },
+    ]);
+
+    createMock.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'tc_serp_h',
+                type: 'function',
+                function: {
+                  name: 'search_hotels',
+                  arguments: JSON.stringify({ cityCode: 'PAR', cityName: 'Paris', checkIn: '2026-05-01', checkOut: '2026-05-05' }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    createMock.mockResolvedValueOnce(
+      asyncIter([{ choices: [{ delta: { content: 'Hotel de Ville at 320 EUR.' } }] }])
+    );
+
+    const { streamChat } = await import('../services/anthropic.js');
+    const events: any[] = [];
+    for await (const evt of streamChat(
+      'travel',
+      [{ role: 'user', content: 'hotels in Paris May 1-5' }],
+      undefined,
+      undefined,
+      undefined
+    )) {
+      events.push(evt);
+    }
+
+    expect(searchHotelsMock).toHaveBeenCalled();
+    expect(searchHotelsFallbackMock).toHaveBeenCalled();
+
+    const card = events.find((e) => e.type === 'card');
+    expect(card).toBeDefined();
+    expect(card.card.type).toBe('hotelList');
+    expect(card.card.data.offers).toHaveLength(1);
+    expect(card.card.data.offers[0].id).toBe('serp_h_0');
+    expect(card.card.data.providerError).toBeUndefined();
+  });
+
+  it('shows providerError on card when both Amadeus and SerpAPI fail', async () => {
+    searchHotelsMock.mockRejectedValue(new Error('Amadeus 500'));
+    searchHotelsFallbackMock.mockRejectedValue(new Error('SerpAPI 429'));
+
+    createMock.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'tc_both_fail_h',
+                type: 'function',
+                function: {
+                  name: 'search_hotels',
+                  arguments: JSON.stringify({ cityCode: 'PAR', checkIn: '2026-05-01', checkOut: '2026-05-05' }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    createMock.mockResolvedValueOnce(
+      asyncIter([{ choices: [{ delta: { content: 'Unavailable.' } }] }])
+    );
+
+    const { streamChat } = await import('../services/anthropic.js');
+    const events: any[] = [];
+    for await (const evt of streamChat(
+      'travel',
+      [{ role: 'user', content: 'hotels in Paris' }],
+      undefined,
+      undefined,
+      undefined
+    )) {
+      events.push(evt);
+    }
+
+    const card = events.find((e) => e.type === 'card');
+    expect(card.card.data.offers).toEqual([]);
+    expect(card.card.data.providerError).toMatch(/Amadeus 500/);
+  });
+
+  it('skips the hotelList card and returns a missing-params error when required fields are absent', async () => {
+    createMock.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'tc_h_missing',
+                type: 'function',
+                function: {
+                  name: 'search_hotels',
+                  // Model called with no cityCode, checkIn, or checkOut.
+                  arguments: JSON.stringify({ cityName: 'Rome' }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    createMock.mockResolvedValueOnce(
+      asyncIter([{ choices: [{ delta: { content: 'What dates are you planning to stay?' } }] }])
+    );
+
+    const { streamChat } = await import('../services/anthropic.js');
+    const events: any[] = [];
+    for await (const evt of streamChat(
+      'travel',
+      [{ role: 'user', content: 'find hotels in Rome' }],
+      undefined,
+      undefined,
+      undefined
+    )) {
+      events.push(evt);
+    }
+
+    // Amadeus must NOT have been called.
+    expect(searchHotelsMock).not.toHaveBeenCalled();
+
+    // No hotelList card should be emitted.
+    const cardEvt = events.find((e) => e.type === 'card');
+    expect(cardEvt).toBeUndefined();
+
+    // The tool message must contain the structured error.
+    const secondCallMessages = createMock.mock.calls[1]![0].messages;
+    const toolMsg = secondCallMessages.find((m: any) => m.role === 'tool');
+    const toolContent = JSON.parse(toolMsg.content);
+    expect(toolContent.error).toBe('missing_required_params');
+    expect(toolContent.missing).toContain('city code (e.g. PAR for Paris)');
+    expect(toolContent.missing).toContain('check-in date (YYYY-MM-DD)');
+    expect(toolContent.missing).toContain('check-out date (YYYY-MM-DD)');
+
+    // Grounding message must guide the model to ask for the missing info.
+    const sysMsgs = secondCallMessages.filter((m: any) => m.role === 'system');
+    expect(
+      sysMsgs.some((m: any) => /missing.*param|ask the user/i.test(m.content ?? ''))
     ).toBe(true);
   });
 

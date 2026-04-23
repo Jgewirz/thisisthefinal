@@ -18,6 +18,7 @@ describe('src/lib/api.ts — fake card extraction is removed', () => {
 
   it('still calls setRichCardOnLastBot for the real /api/style/analyze result', () => {
     // The style-analysis path produces ground-truth rich cards and must remain.
-    expect(apiSrc).toMatch(/setRichCardOnLastBot\(agentId, richCard\)/);
+    // The binding name may change as we refactor; anchor on the call shape.
+    expect(apiSrc).toMatch(/setRichCardOnLastBot\(agentId,\s*\w+(?:\.\w+)?\)/);
   });
 });

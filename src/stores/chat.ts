@@ -1,10 +1,15 @@
 import { create } from 'zustand';
-import type { AgentId, Message, RichCard } from '../app/types';
+import type { ActivityState, AgentId, Message, RichCard } from '../app/types';
 
 interface AgentState {
   messages: Message[];
   isStreaming: boolean;
   historyLoaded: boolean;
+  /**
+   * Live tool / model activity indicator. Cleared on the first streamed token
+   * or when the stream ends (success or error). Never persisted.
+   */
+  activity: ActivityState | null;
 }
 
 interface ChatStore {
@@ -17,6 +22,7 @@ interface ChatStore {
   setRichCardOnLastBot: (agentId: AgentId, richCard: RichCard) => void;
   updateLastBotAgentId: (storeAgentId: AgentId, classifiedAgentId: AgentId) => void;
   setStreaming: (agentId: AgentId, streaming: boolean) => void;
+  setActivity: (agentId: AgentId, activity: ActivityState | null) => void;
   setHistoryLoaded: (agentId: AgentId) => void;
   getMessages: (agentId: AgentId) => Message[];
 }
@@ -25,6 +31,7 @@ const defaultAgentState = (): AgentState => ({
   messages: [],
   isStreaming: false,
   historyLoaded: false,
+  activity: null,
 });
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -95,6 +102,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           [agentId]: {
             ...state.agents[agentId],
             messages: agentMessages,
+            // First visible token means the backend is done "thinking/writing".
+            activity: null,
           },
         },
       };
@@ -143,6 +152,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         [agentId]: {
           ...state.agents[agentId],
           isStreaming: streaming,
+          // A finished stream can never be "still searching…"
+          activity: streaming ? state.agents[agentId].activity : null,
+        },
+      },
+    })),
+
+  setActivity: (agentId, activity) =>
+    set((state) => ({
+      agents: {
+        ...state.agents,
+        [agentId]: {
+          ...state.agents[agentId],
+          activity,
         },
       },
     })),

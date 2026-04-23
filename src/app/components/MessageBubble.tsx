@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { Message, agents } from '../types';
-import { Check, CheckCheck, Star } from 'lucide-react';
+import { Check, CheckCheck, Shirt, Star } from 'lucide-react';
 import { PlaceCard } from './cards/PlaceCard';
 import { PlacesListCard } from './cards/PlacesListCard';
 import { ColorSeasonCard } from './cards/ColorSeasonCard';
@@ -8,7 +9,11 @@ import { FlightCard } from './cards/FlightCard';
 import { FlightListCard } from './cards/FlightListCard';
 import { HotelListCard } from './cards/HotelListCard';
 import { ClassListCard } from './cards/ClassListCard';
+import { SourceBadge } from './SourceBadge';
+import { ReviewWardrobeDialog } from './ReviewWardrobeDialog';
+import { resolveCardProvenance } from '../cardProvenance';
 import ReactMarkdown from 'react-markdown';
+import { useWardrobeSavesStore } from '../../stores/wardrobeSaves';
 
 interface MessageBubbleProps {
   message: Message;
@@ -31,33 +36,30 @@ function OutfitRatingCard({
   return (
     <div
       className="p-4 rounded-xl space-y-3"
-      style={{ backgroundColor: 'var(--bg-surface)' }}
+      style={{ backgroundColor: 'var(--bg-surface-elevated)' }}
     >
-      {/* Score */}
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold" style={{ color: agentColor }}>
+        <h3 className="text-base font-semibold" style={{ color: agentColor }}>
           Outfit Rating
         </h3>
         <div className="flex items-center gap-1">
-          <Star size={18} fill={agentColor} style={{ color: agentColor }} />
-          <span className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
+          <Star size={16} fill={agentColor} style={{ color: agentColor }} />
+          <span className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>
             {data.score}/10
           </span>
         </div>
       </div>
 
-      {/* Vibe */}
       <div
-        className="px-3 py-1 rounded-full text-sm inline-block"
-        style={{ backgroundColor: agentColor + '20', color: agentColor }}
+        className="px-3 py-1 rounded-full text-xs inline-block font-medium"
+        style={{ backgroundColor: agentColor + '22', color: agentColor }}
       >
         {data.overallVibe}
       </div>
 
-      {/* Strengths */}
       {data.strengths?.length > 0 && (
         <div>
-          <div className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-xs font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--text-muted)' }}>
             Strengths
           </div>
           <ul className="space-y-1">
@@ -71,10 +73,9 @@ function OutfitRatingCard({
         </div>
       )}
 
-      {/* Improvements */}
       {data.improvements?.length > 0 && (
         <div>
-          <div className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-xs font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--text-muted)' }}>
             Could improve
           </div>
           <ul className="space-y-1">
@@ -88,18 +89,17 @@ function OutfitRatingCard({
         </div>
       )}
 
-      {/* Accessory suggestions */}
       {data.accessorySuggestions?.length > 0 && (
         <div>
-          <div className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-xs font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--text-muted)' }}>
             Accessory ideas
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             {data.accessorySuggestions.map((s, i) => (
               <span
                 key={i}
-                className="px-2 py-0.5 rounded-full text-xs border"
-                style={{ borderColor: agentColor, color: agentColor }}
+                className="px-2 py-0.5 rounded-full text-xs"
+                style={{ border: `1px solid ${agentColor}55`, color: agentColor }}
               >
                 {s}
               </span>
@@ -108,10 +108,9 @@ function OutfitRatingCard({
         </div>
       )}
 
-      {/* Color harmony */}
-      <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+      <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
         Color harmony:{' '}
-        <span style={{ color: 'var(--text-primary)' }}>{data.colorHarmony}</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{data.colorHarmony}</span>
       </div>
     </div>
   );
@@ -120,6 +119,9 @@ function OutfitRatingCard({
 export function MessageBubble({ message }: MessageBubbleProps) {
   const agent = agents[message.agentId];
   const isUser = message.type === 'user';
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const savedToWardrobe = useWardrobeSavesStore((s) => s.isSaved(message.id));
+  const markSaved = useWardrobeSavesStore((s) => s.markSaved);
 
   const timeStr = message.timestamp.toLocaleTimeString('en-US', {
     hour: 'numeric',
@@ -127,50 +129,80 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     hour12: true,
   });
 
-  // Don't render empty bot messages (streaming placeholder before first token)
-  if (!isUser && !message.text && !message.richCard) {
-    return null;
-  }
+  const canSaveToWardrobe =
+    isUser && message.agentId === 'style' && Boolean(message.imageUrl);
+
+  if (!isUser && !message.text && !message.richCard) return null;
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[85%] sm:max-w-[70%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-1`}
-      >
-        {/* Agent badge for bot messages */}
-        {!isUser && (
-          <div
-            className="px-2 py-0.5 rounded-full text-xs font-medium"
-            style={{
-              backgroundColor: agent.color + '20',
-              color: agent.color,
-            }}
-          >
-            {agent.name}
-          </div>
-        )}
-
-        {/* Message bubble */}
+    <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
+      {/* Avatar */}
+      {!isUser && (
         <div
-          className="px-4 py-2.5 rounded-2xl"
+          className="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center text-xs font-bold self-end mb-5"
           style={{
-            backgroundColor: isUser ? 'var(--user-bubble)' : 'var(--bot-bubble)',
-            color: 'var(--text-primary)',
-            borderBottomRightRadius: isUser ? '4px' : undefined,
-            borderBottomLeftRadius: !isUser ? '4px' : undefined,
+            background: `linear-gradient(135deg, ${agent.color}cc, ${agent.color}66)`,
+            color: '#fff',
           }}
         >
-          {/* Image thumbnail for user messages */}
+          G
+        </div>
+      )}
+
+      <div className={`flex flex-col gap-1 max-w-[78%] ${isUser ? 'items-end' : 'items-start'}`}>
+
+        {/* Bubble */}
+        <div
+          className="rounded-2xl px-4 py-3 text-sm leading-relaxed"
+          style={
+            isUser
+              ? {
+                  backgroundColor: 'var(--user-bubble)',
+                  color: 'var(--text-primary)',
+                  borderBottomRightRadius: '6px',
+                  borderLeft: `3px solid ${agent.color}`,
+                }
+              : {
+                  backgroundColor: 'var(--bg-surface)',
+                  color: 'var(--text-primary)',
+                  borderBottomLeftRadius: '6px',
+                  border: '1px solid var(--border-subtle)',
+                }
+          }
+        >
+          {/* Image thumbnail */}
           {message.imageUrl && (
-            <div className="mb-2">
+            <div className="mb-2.5">
               <img
                 src={message.imageUrl}
                 alt="Uploaded"
-                className="max-h-48 max-w-full rounded-lg object-cover"
+                className="max-h-52 max-w-full rounded-xl object-cover"
               />
+              {canSaveToWardrobe && (
+                <button
+                  type="button"
+                  onClick={() => setSaveDialogOpen(true)}
+                  disabled={savedToWardrobe}
+                  aria-label={savedToWardrobe ? 'Saved to wardrobe' : 'Save to wardrobe'}
+                  className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium disabled:opacity-60 active:scale-95 transition-all"
+                  style={{
+                    backgroundColor: savedToWardrobe
+                      ? 'var(--bg-surface-elevated)'
+                      : agent.color,
+                    color: savedToWardrobe ? 'var(--text-secondary)' : '#fff',
+                  }}
+                >
+                  {savedToWardrobe ? (
+                    <><Check size={11} /> Saved</>
+                  ) : (
+                    <><Shirt size={11} /> Save to wardrobe</>
+                  )}
+                </button>
+              )}
             </div>
           )}
 
+          {/* Text content */}
           {message.text && (
             isUser ? (
               <p className="whitespace-pre-wrap">{message.text}</p>
@@ -179,13 +211,13 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 <ReactMarkdown
                   components={{
                     h1: ({ children }) => (
-                      <h1 className="text-lg font-bold mt-3 mb-1.5" style={{ color: 'var(--text-primary)' }}>{children}</h1>
+                      <h1 className="text-base font-bold mt-3 mb-1.5" style={{ color: 'var(--text-primary)' }}>{children}</h1>
                     ),
                     h2: ({ children }) => (
-                      <h2 className="text-base font-bold mt-3 mb-1.5" style={{ color: 'var(--text-primary)' }}>{children}</h2>
+                      <h2 className="text-sm font-bold mt-3 mb-1" style={{ color: 'var(--text-primary)' }}>{children}</h2>
                     ),
                     h3: ({ children }) => (
-                      <h3 className="text-sm font-bold mt-2 mb-1" style={{ color: 'var(--text-primary)' }}>{children}</h3>
+                      <h3 className="text-sm font-semibold mt-2 mb-1" style={{ color: 'var(--text-primary)' }}>{children}</h3>
                     ),
                     p: ({ children }) => (
                       <p className="mb-2 last:mb-0 leading-relaxed" style={{ color: 'var(--text-primary)' }}>{children}</p>
@@ -193,26 +225,28 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                     strong: ({ children }) => (
                       <strong className="font-semibold" style={{ color: 'var(--text-primary)' }}>{children}</strong>
                     ),
-                    em: ({ children }) => (
-                      <em className="italic">{children}</em>
-                    ),
+                    em: ({ children }) => <em className="italic">{children}</em>,
+                    // Use list-outside + padding so wrapped lines align cleanly (list-inside
+                    // tends to break layout and indentation in narrow chat bubbles).
                     ul: ({ children }) => (
-                      <ul className="list-disc list-inside mb-2 space-y-0.5">{children}</ul>
+                      <ul className="list-disc list-outside pl-5 mb-2 space-y-1">{children}</ul>
                     ),
                     ol: ({ children }) => (
-                      <ol className="list-decimal list-inside mb-2 space-y-0.5">{children}</ol>
+                      <ol className="list-decimal list-outside pl-5 mb-2 space-y-1">{children}</ol>
                     ),
                     li: ({ children }) => (
-                      <li className="leading-relaxed" style={{ color: 'var(--text-primary)' }}>{children}</li>
+                      <li className="leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                        {children}
+                      </li>
                     ),
                     hr: () => (
-                      <hr className="my-2 border-0 h-px" style={{ backgroundColor: 'var(--bg-surface-elevated)' }} />
+                      <hr className="my-2 border-0 h-px" style={{ backgroundColor: 'var(--border-subtle)' }} />
                     ),
                     code: ({ children }) => (
-                      <code className="px-1.5 py-0.5 rounded text-sm" style={{ backgroundColor: 'var(--bg-surface-elevated)', color: agent.color }}>{children}</code>
+                      <code className="px-1.5 py-0.5 rounded text-xs font-mono" style={{ backgroundColor: 'var(--bg-surface-elevated)', color: agent.color }}>{children}</code>
                     ),
                     a: ({ href, children }) => (
-                      <a href={href} target="_blank" rel="noopener noreferrer" className="underline transition-opacity duration-150 hover:opacity-75" style={{ color: agent.color }}>{children}</a>
+                      <a href={href} target="_blank" rel="noopener noreferrer" className="underline hover:opacity-75 transition-opacity" style={{ color: agent.color }}>{children}</a>
                     ),
                   }}
                 >
@@ -224,85 +258,47 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
           {/* Rich card */}
           {message.richCard && (
-            <div className="mt-3">
-              {message.richCard.type === 'place' && (
-                <PlaceCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'placesList' && (
-                <PlacesListCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'colorSeason' && (
-                <ColorSeasonCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'fitnessClass' && (
-                <FitnessClassCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'flight' && (
-                <FlightCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'flightList' && (
-                <FlightListCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'hotelList' && (
-                <HotelListCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'classList' && (
-                <ClassListCard data={message.richCard.data} agentColor={agent.color} />
-              )}
-              {message.richCard.type === 'outfit' && (
-                <OutfitRatingCard
-                  data={message.richCard.data}
-                  agentColor={agent.color}
-                />
-              )}
+            <div className="mt-3 space-y-2">
+              <SourceBadge
+                provenance={resolveCardProvenance(message.richCard.type, message.richCard.data)}
+                agentColor={agent.color}
+              />
+              {message.richCard.type === 'place' && <PlaceCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'placesList' && <PlacesListCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'colorSeason' && <ColorSeasonCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'fitnessClass' && <FitnessClassCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'flight' && <FlightCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'flightList' && <FlightListCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'hotelList' && <HotelListCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'classList' && <ClassListCard data={message.richCard.data} agentColor={agent.color} />}
+              {message.richCard.type === 'outfit' && <OutfitRatingCard data={message.richCard.data} agentColor={agent.color} />}
               {message.richCard.type === 'reminder' && (() => {
                 const r = message.richCard.data as {
-                  id?: string;
-                  title?: string;
-                  notes?: string | null;
-                  due_at?: string;
-                  // Legacy shape: { time, action }
-                  time?: string;
-                  action?: string;
+                  id?: string; title?: string; notes?: string | null;
+                  due_at?: string; time?: string; action?: string;
                 };
                 const when = r.due_at
                   ? new Date(r.due_at).toLocaleString('en-US', {
-                      weekday: 'short',
-                      month: 'short',
-                      day: 'numeric',
-                      hour: 'numeric',
-                      minute: '2-digit',
+                      weekday: 'short', month: 'short', day: 'numeric',
+                      hour: 'numeric', minute: '2-digit',
                     })
                   : r.time ?? '';
                 const what = r.title ?? r.action ?? 'Reminder';
                 return (
                   <div
-                    className="flex items-start gap-2 p-3 rounded-lg"
-                    style={{ backgroundColor: 'var(--bg-surface)' }}
+                    className="flex items-start gap-2.5 p-3 rounded-xl"
+                    style={{ backgroundColor: 'var(--bg-surface-elevated)' }}
                   >
                     <div
-                      className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                      className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 mt-0.5"
                       style={{ backgroundColor: 'var(--success)' }}
                     >
-                      <Check size={14} style={{ color: 'var(--bg-primary)' }} />
+                      <Check size={12} style={{ color: '#fff' }} />
                     </div>
                     <div>
-                      <div style={{ color: 'var(--text-primary)' }}>
-                        <span className="font-semibold">{what}</span>
-                      </div>
-                      {when && (
-                        <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                          {when}
-                        </div>
-                      )}
-                      {r.notes && (
-                        <div
-                          className="text-sm mt-1"
-                          style={{ color: 'var(--text-secondary)' }}
-                        >
-                          {r.notes}
-                        </div>
-                      )}
+                      <div className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{what}</div>
+                      {when && <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{when}</div>}
+                      {r.notes && <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>{r.notes}</div>}
                     </div>
                   </div>
                 );
@@ -311,16 +307,21 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           )}
         </div>
 
-        {/* Timestamp and status */}
-        <div
-          className={`flex items-center gap-1 px-1 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
-        >
-          <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-            {timeStr}
-          </span>
-          {isUser && <CheckCheck size={14} style={{ color: 'var(--text-secondary)' }} />}
+        {/* Timestamp below bubble */}
+        <div className={`flex items-center gap-1 px-1 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{timeStr}</span>
+          {isUser && <CheckCheck size={12} style={{ color: 'var(--text-muted)' }} />}
         </div>
       </div>
+
+      {saveDialogOpen && message.imageUrl && (
+        <ReviewWardrobeDialog
+          imageUrl={message.imageUrl}
+          clientId={message.id}
+          onClose={() => setSaveDialogOpen(false)}
+          onSaved={() => markSaved(message.id)}
+        />
+      )}
     </div>
   );
 }

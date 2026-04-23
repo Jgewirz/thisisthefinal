@@ -1,5 +1,23 @@
 export type AgentId = 'all' | 'style' | 'travel' | 'fitness' | 'lifestyle';
 
+/** Mirror of server/services/anthropic.ts:ActivityKind. */
+export type ActivityKind =
+  | 'thinking'
+  | 'search_places'
+  | 'search_flights'
+  | 'search_hotels'
+  | 'find_fitness_classes'
+  | 'create_reminder'
+  | 'list_wardrobe'
+  | 'writing';
+
+export interface ActivityState {
+  kind: ActivityKind;
+  detail?: string;
+  /** Epoch ms; client uses this to age-out stuck indicators. */
+  startedAt: number;
+}
+
 export interface AgentConfig {
   id: AgentId;
   name: string;

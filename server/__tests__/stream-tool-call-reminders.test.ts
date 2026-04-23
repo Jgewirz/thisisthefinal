@@ -12,6 +12,7 @@ vi.mock('openai', () => {
 const createReminderMock = vi.fn();
 vi.mock('../services/reminders.js', () => ({
   createReminder: createReminderMock,
+  listReminders: vi.fn(),
 }));
 
 // Stub out other tool services so their imports resolve cleanly.
@@ -195,5 +196,72 @@ describe('streamChat — create_reminder tool calling', () => {
     // Without userId, lifestyle has no other tools, so the tool path is skipped.
     expect(firstCallArgs.tools).toBeUndefined();
     expect(firstCallArgs.stream).toBe(true);
+  });
+});
+
+describe('streamChat — list_reminders tool calling', () => {
+  it('invokes list_reminders on lifestyle agent and summarizes the results', async () => {
+    const { listReminders } = await import('../services/reminders.js');
+    (listReminders as any).mockResolvedValue([
+      {
+        id: 'r1',
+        user_id: 'u1',
+        agent_id: 'lifestyle',
+        title: 'Drink water',
+        notes: null,
+        due_at: '2026-05-01T12:00:00.000Z',
+        notify_via: 'in_app',
+        status: 'pending',
+        created_at: '2026-04-20T00:00:00.000Z',
+        fired_at: null,
+      },
+    ]);
+
+    createMock.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'tc_lr1',
+                type: 'function',
+                function: {
+                  name: 'list_reminders',
+                  arguments: JSON.stringify({ status: 'pending', limit: 10 }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    createMock.mockResolvedValueOnce(
+      asyncIter([{ choices: [{ delta: { content: 'You have 1 pending reminder.' } }] }])
+    );
+
+    const { streamChat } = await import('../services/anthropic.js');
+    const events: any[] = [];
+    for await (const evt of streamChat(
+      'lifestyle',
+      [{ role: 'user', content: 'what reminders do i have?' }],
+      undefined,
+      undefined,
+      undefined,
+      'u1'
+    )) {
+      events.push(evt);
+    }
+
+    expect((listReminders as any)).toHaveBeenCalledWith('u1', expect.objectContaining({ status: 'pending', limit: 10 }));
+
+    const firstCallArgs = createMock.mock.calls[0]![0];
+    const toolNames = (firstCallArgs.tools || []).map((t: any) => t.function.name);
+    expect(toolNames).toContain('list_reminders');
+
+    const second = createMock.mock.calls[1]![0].messages;
+    const toolMsg = second.find((m: any) => m.role === 'tool');
+    expect(JSON.parse(toolMsg.content)).toMatchObject({ ok: true, count: 1 });
   });
 });

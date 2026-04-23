@@ -4,6 +4,13 @@ import { buildSystemPrompt } from '../config/agents.js';
 const AGENTS = ['style', 'travel', 'fitness', 'lifestyle'] as const;
 
 describe('agent system prompts — grounding', () => {
+  it.each(AGENTS)('%s prompt starts with today\'s date', (agentId) => {
+    const prompt = buildSystemPrompt(agentId, {});
+    const today = new Date().toISOString().slice(0, 10);
+    expect(prompt).toMatch(new RegExp(`Today is .*${today}`));
+    expect(prompt).toMatch(/MUST be on or after today/);
+  });
+
   it.each(AGENTS)('%s prompt never instructs the model to emit card JSON', (agentId) => {
     const prompt = buildSystemPrompt(agentId, {});
     expect(prompt).not.toMatch(/RICH CARD TRIGGERS/);
@@ -23,9 +30,10 @@ describe('agent system prompts — grounding', () => {
     }
   );
 
-  it('lifestyle prompt explicitly disclaims reminder persistence', () => {
+  it('lifestyle prompt tells the model to use create_reminder for real reminders', () => {
     const prompt = buildSystemPrompt('lifestyle', {});
-    expect(prompt).toMatch(/reminders are \*\*not yet persisted\*\*/i);
+    expect(prompt).toMatch(/create_reminder/);
+    expect(prompt).toMatch(/persists the reminder/i);
   });
 
   it('travel prompt tells the model to use search_flights for real offers', () => {

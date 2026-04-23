@@ -80,7 +80,8 @@ describe('streamChat tool calling', () => {
       'yoga class tomorrow',
       expect.objectContaining({ lat: 40.7, lng: -74 })
     );
-    expect(events[0]).toEqual({
+    const card = events.find((e) => e.type === 'card');
+    expect(card).toEqual({
       type: 'card',
       card: {
         type: 'placesList',
@@ -90,10 +91,17 @@ describe('streamChat tool calling', () => {
         },
       },
     });
-    expect(events.slice(1)).toEqual([
+    const tokens = events.filter((e) => e.type === 'token');
+    expect(tokens).toEqual([
       { type: 'token', text: 'Found' },
       { type: 'token', text: ' one!' },
     ]);
+    // Activity indicators: "thinking" before tool-choice, specific tool kind
+    // before the API call, and "writing" before the final streamed response.
+    const activityKinds = events
+      .filter((e) => e.type === 'activity')
+      .map((e: any) => e.kind);
+    expect(activityKinds).toEqual(['thinking', 'search_places', 'writing']);
 
     // Second call (the streaming finalizer) must carry the grounding message.
     const secondCallMessages = createMock.mock.calls[1]![0].messages;
@@ -142,7 +150,7 @@ describe('streamChat tool calling', () => {
       events.push(evt);
     }
 
-    expect(events[0]).toMatchObject({
+    expect(events.find((e) => e.type === 'card')).toMatchObject({
       type: 'card',
       card: { type: 'placesList', data: { places: [] } },
     });
@@ -183,6 +191,14 @@ describe('streamChat tool calling', () => {
     const firstCallArgs = createMock.mock.calls[0]![0];
     expect(firstCallArgs.tools).toBeUndefined();
     expect(firstCallArgs.stream).toBe(true);
-    expect(events).toEqual([{ type: 'token', text: 'hi' }]);
+    // The no-tool path still emits a single "thinking" activity before
+    // streaming the response so the indicator appears instantly.
+    expect(events.filter((e) => e.type === 'token')).toEqual([
+      { type: 'token', text: 'hi' },
+    ]);
+    const activityKinds = events
+      .filter((e) => e.type === 'activity')
+      .map((e: any) => e.kind);
+    expect(activityKinds).toEqual(['thinking']);
   });
 });

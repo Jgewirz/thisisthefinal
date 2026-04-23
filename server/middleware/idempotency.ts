@@ -122,12 +122,13 @@ export function idempotency(opts: IdempotencyOptions = {}) {
 
       const originalJson = res.json.bind(res);
       res.json = ((body: unknown) => {
-        // Fire-and-forget — response is already on the way.
-        void kv.setWithTtl(
-          ck,
-          { bodyHash, statusCode: res.statusCode || 200, body },
-          ttlMs
-        );
+        const status = res.statusCode || 200;
+        // Only cache final, successful responses. 4xx/5xx are not idempotent
+        // operations (the work didn't complete); caching them would trap the
+        // client in a 409 loop when they retry with a fixed body.
+        if (status < 400) {
+          void kv.setWithTtl(ck, { bodyHash, statusCode: status, body }, ttlMs);
+        }
         return originalJson(body);
       }) as typeof res.json;
 
