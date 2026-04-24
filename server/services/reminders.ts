@@ -96,24 +96,31 @@ export async function listReminders(
       ? [opts.status]
       : null;
 
-  if (statuses) {
+  try {
+    if (statuses) {
+      const { rows } = await pool.query(
+        `SELECT * FROM reminders
+         WHERE user_id = $1 AND status = ANY($2::text[])
+         ORDER BY due_at ASC
+         LIMIT $3`,
+        [userId, statuses, limit]
+      );
+      return rows.map(rowToReminder);
+    }
     const { rows } = await pool.query(
       `SELECT * FROM reminders
-       WHERE user_id = $1 AND status = ANY($2::text[])
+       WHERE user_id = $1
        ORDER BY due_at ASC
-       LIMIT $3`,
-      [userId, statuses, limit]
+       LIMIT $2`,
+      [userId, limit]
     );
     return rows.map(rowToReminder);
+  } catch (err: any) {
+    // Fail-open: reminders are non-critical. If the DB is temporarily
+    // unavailable (timeouts, restarts), return an empty list instead of
+    // crashing the caller/poller.
+    return [];
   }
-  const { rows } = await pool.query(
-    `SELECT * FROM reminders
-     WHERE user_id = $1
-     ORDER BY due_at ASC
-     LIMIT $2`,
-    [userId, limit]
-  );
-  return rows.map(rowToReminder);
 }
 
 /**
@@ -125,16 +132,21 @@ export async function getDueReminders(
   userId: string,
   now: Date = new Date()
 ): Promise<Reminder[]> {
-  const { rows } = await pool.query(
-    `SELECT * FROM reminders
-     WHERE user_id = $1
-       AND status = 'pending'
-       AND due_at <= $2
-     ORDER BY due_at ASC
-     LIMIT 50`,
-    [userId, now.toISOString()]
-  );
-  return rows.map(rowToReminder);
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM reminders
+       WHERE user_id = $1
+         AND status = 'pending'
+         AND due_at <= $2
+       ORDER BY due_at ASC
+       LIMIT 50`,
+      [userId, now.toISOString()]
+    );
+    return rows.map(rowToReminder);
+  } catch (err: any) {
+    // Fail-open for poller.
+    return [];
+  }
 }
 
 export async function updateReminderStatus(

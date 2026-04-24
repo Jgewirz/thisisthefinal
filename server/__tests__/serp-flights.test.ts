@@ -142,7 +142,20 @@ describe('searchFlightsFallback', () => {
     expect(capturedUrl).toContain('arrival_id=LHR');
     expect(capturedUrl).toContain('outbound_date=2026-05-01');
     expect(capturedUrl).toContain('return_date=2026-05-10');
+    expect(capturedUrl).toContain('type=1');
     expect(capturedUrl).toContain('adults=2');
     expect(capturedUrl).toContain('api_key=test-serp-key');
+  });
+
+  it('uses one-way type=2 when returnDate is not provided', async () => {
+    let capturedUrl = '';
+    const fakeFetch = vi.fn().mockImplementation((url: string) => {
+      capturedUrl = url;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ best_flights: [] }) });
+    });
+    const { searchFlightsFallback } = await import('../services/serpFlights.js');
+    await searchFlightsFallback(BASE_PARAMS, fakeFetch as any);
+    expect(capturedUrl).toContain('type=2');
+    expect(capturedUrl).not.toContain('return_date=');
   });
 });

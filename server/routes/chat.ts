@@ -62,7 +62,8 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
-  if (!Array.isArray(messages) || messages.some((m) => !m.role || !m.content)) {
+  // Allow empty-string content; only reject null/undefined.
+  if (!Array.isArray(messages) || messages.some((m) => !m.role || (m as any).content == null)) {
     res.status(400).json({ error: 'Each message must have a role and content' });
     return;
   }

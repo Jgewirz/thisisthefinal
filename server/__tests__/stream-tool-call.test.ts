@@ -111,6 +111,53 @@ describe('streamChat tool calling', () => {
     expect(groundingMsgs.some((m: any) => /only reference/i.test(m.content))).toBe(true);
   });
 
+  it('adds reservation-link guidance when the user is trying to book a restaurant', async () => {
+    searchPlacesMock.mockResolvedValue([
+      { id: '1', name: 'Sushi Place', address: 'Shibuya, Tokyo' },
+    ]);
+
+    createMock.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'tc_r',
+                type: 'function',
+                function: {
+                  name: 'search_places',
+                  arguments: JSON.stringify({ query: 'reserve a sushi restaurant tonight' }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    createMock.mockResolvedValueOnce(
+      asyncIter([{ choices: [{ delta: { content: 'Ok.' } }] }])
+    );
+
+    const { streamChat } = await import('../services/anthropic.js');
+    for await (const _ of streamChat(
+      'travel',
+      [{ role: 'user', content: 'book a restaurant' }],
+      undefined,
+      undefined,
+      { lat: 35.6, lng: 139.7 }
+    )) {
+      // drain
+    }
+
+    const secondCallMessages = createMock.mock.calls[1]![0].messages;
+    const sysMsgs = secondCallMessages.filter((m: any) => m.role === 'system');
+    expect(
+      sysMsgs.some((m: any) => /OpenTable|Resy|booking links on the card/i.test(m.content ?? ''))
+    ).toBe(true);
+  });
+
   it('injects a "no results → do not invent" guardrail on empty tool result', async () => {
     searchPlacesMock.mockResolvedValue([]);
 
@@ -200,5 +247,55 @@ describe('streamChat tool calling', () => {
       .filter((e) => e.type === 'activity')
       .map((e: any) => e.kind);
     expect(activityKinds).toEqual(['thinking']);
+  });
+
+  it('still allows travel to call search_places without GPS (city in query)', async () => {
+    searchPlacesMock.mockResolvedValue([
+      { id: '1', name: 'Sushi Place', address: 'Shibuya, Tokyo' },
+    ]);
+
+    createMock.mockResolvedValueOnce({
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'tc_no_gps',
+                type: 'function',
+                function: {
+                  name: 'search_places',
+                  arguments: JSON.stringify({ query: 'reserve sushi restaurant in Shibuya Tokyo tonight' }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    createMock.mockResolvedValueOnce(
+      asyncIter([{ choices: [{ delta: { content: 'Here are options.' } }] }])
+    );
+
+    const { streamChat } = await import('../services/anthropic.js');
+    const events: any[] = [];
+    for await (const evt of streamChat(
+      'travel',
+      [{ role: 'user', content: 'Reserve a sushi restaurant tonight in Shibuya, Tokyo' }],
+      undefined,
+      undefined
+      // no location
+    )) {
+      events.push(evt);
+    }
+
+    // Should have emitted a placesList card even without location.
+    const card = events.find((e) => e.type === 'card');
+    expect(card?.card?.type).toBe('placesList');
+    expect(searchPlacesMock).toHaveBeenCalledWith(
+      expect.stringContaining('Shibuya'),
+      expect.objectContaining({ lat: undefined, lng: undefined })
+    );
   });
 });

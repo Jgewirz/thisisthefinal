@@ -7,6 +7,12 @@ interface PlacesListCardProps {
   agentColor: string;
 }
 
+function wantsReservation(query: string): boolean {
+  return /\b(reserve|reservation|book|booking|table|dinner|lunch|brunch|restaurant)\b/i.test(
+    query ?? ''
+  );
+}
+
 function priceSymbol(level?: string): string {
   switch (level) {
     case 'PRICE_LEVEL_FREE':
@@ -30,8 +36,80 @@ function directionsUrl(p: PlaceResult): string {
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
 
+function shortLocation(address: string | undefined): string {
+  const a = (address ?? '').trim();
+  if (!a) return '';
+  // Prefer the tail of a "Shibuya, Tokyo, Japan" style address.
+  const parts = a.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length >= 2) return parts.slice(-2).join(', ');
+  // Otherwise, collapse long postal strings to keep the query stable.
+  return a.length > 60 ? a.slice(0, 60) : a;
+}
+
+function reservationSearchText(p: PlaceResult): string {
+  const loc = shortLocation(p.address);
+  return `${p.name}${loc ? ` ${loc}` : ''}`.trim();
+}
+
+type ReservationProvider = 'opentable' | 'resy' | 'tabelog' | 'gurunavi';
+
+function reservationProviderFromWebsite(url: string | undefined): ReservationProvider | null {
+  if (!url) return null;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.includes('opentable.')) return 'opentable';
+    if (host === 'resy.com' || host.endsWith('.resy.com')) return 'resy';
+    if (host === 'tabelog.com' || host.endsWith('.tabelog.com')) return 'tabelog';
+    if (host.endsWith('gurunavi.co.jp')) return 'gurunavi';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function providerLabel(p: ReservationProvider): string {
+  switch (p) {
+    case 'opentable':
+      return 'OpenTable';
+    case 'resy':
+      return 'Resy';
+    case 'tabelog':
+      return 'Tabelog';
+    case 'gurunavi':
+      return 'Gurunavi';
+  }
+}
+
+function isJapanAddress(address: string | undefined): boolean {
+  const a = (address ?? '').toLowerCase();
+  return (
+    a.includes('japan') ||
+    a.includes('tokyo') ||
+    // Basic Japanese character ranges
+    /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9faf]/.test(address ?? '')
+  );
+}
+
+function openTableUrl(p: PlaceResult): string {
+  // Direct OpenTable search (no Google). Note: availability varies by region.
+  const term = encodeURIComponent(reservationSearchText(p));
+  return `https://www.opentable.com/s?term=${term}`;
+}
+
+function tabelogUrl(p: PlaceResult): string {
+  // Direct Tabelog search (Japan-focused).
+  const term = encodeURIComponent(reservationSearchText(p));
+  return `https://tabelog.com/en/rstLst/?sk=${term}`;
+}
+
+function gurunaviUrl(p: PlaceResult): string {
+  const term = encodeURIComponent(reservationSearchText(p));
+  return `https://r.gnavi.co.jp/area/jp/rs/?fw=${term}`;
+}
+
 export function PlacesListCard({ data, agentColor }: PlacesListCardProps) {
   const places = data.places ?? [];
+  const showReservationLinks = wantsReservation(data.query);
 
   if (places.length === 0) {
     return (
@@ -114,7 +192,71 @@ export function PlacesListCard({ data, agentColor }: PlacesListCardProps) {
                 Directions
                 <ExternalLink size={11} />
               </a>
-              {p.websiteUri && (
+              {showReservationLinks && (() => {
+                const provider = reservationProviderFromWebsite(p.websiteUri);
+                // If the official website is already a reservation platform, prefer it as the
+                // primary CTA and avoid extra (often irrelevant) search links.
+                if (provider && p.websiteUri) {
+                  return (
+                    <a
+                      href={p.websiteUri}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs px-2 py-1 rounded-md inline-flex items-center gap-1 transition-opacity hover:opacity-80"
+                      style={{ backgroundColor: agentColor, color: 'var(--bg-primary)' }}
+                      aria-label={`Reserve ${p.name} on ${providerLabel(provider)}`}
+                    >
+                      Reserve on {providerLabel(provider)}
+                      <ExternalLink size={11} />
+                    </a>
+                  );
+                }
+                const isJapan = isJapanAddress(p.address);
+                return (
+                  <>
+                    {isJapan ? (
+                      <>
+                        <a
+                          href={tabelogUrl(p)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs px-2 py-1 rounded-md inline-flex items-center gap-1 border transition-opacity hover:opacity-80"
+                          style={{ borderColor: agentColor, color: agentColor }}
+                          aria-label={`Search ${p.name} on Tabelog`}
+                        >
+                          Tabelog
+                          <ExternalLink size={11} />
+                        </a>
+                        <a
+                          href={gurunaviUrl(p)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs px-2 py-1 rounded-md inline-flex items-center gap-1 border transition-opacity hover:opacity-80"
+                          style={{ borderColor: agentColor, color: agentColor }}
+                          aria-label={`Search ${p.name} on Gurunavi`}
+                        >
+                          Gurunavi
+                          <ExternalLink size={11} />
+                        </a>
+                      </>
+                    ) : (
+                      <a
+                        href={openTableUrl(p)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs px-2 py-1 rounded-md inline-flex items-center gap-1 border transition-opacity hover:opacity-80"
+                        style={{ borderColor: agentColor, color: agentColor }}
+                        aria-label={`Search ${p.name} on OpenTable`}
+                      >
+                        OpenTable
+                        <ExternalLink size={11} />
+                      </a>
+                    )}
+                  </>
+                );
+              })()}
+              {/* Hide generic Website chip when it's already a reservation platform (Reserve CTA above). */}
+              {p.websiteUri && reservationProviderFromWebsite(p.websiteUri) == null && (
                 <a
                   href={p.websiteUri}
                   target="_blank"

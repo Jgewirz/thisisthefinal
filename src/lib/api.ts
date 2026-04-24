@@ -309,7 +309,8 @@ export async function sendMessage(
     });
 
     if (!res.ok) {
-      throw new Error(`API error: ${res.status}`);
+      const body = await res.text().catch(() => '');
+      throw new Error(`API error: ${res.status}${body ? ` — ${body.slice(0, 200)}` : ''}`);
     }
 
     const classifiedAgent = await readStream(res, agentId);
@@ -364,7 +365,7 @@ export async function sendMessage(
     store.appendToLastBot(
       agentId,
       err.message?.includes('API error')
-        ? 'Sorry, I had trouble connecting. Please try again!'
+        ? `Sorry, I had trouble connecting (${String(err.message).replace(/^API error:\s*/i, '')}). Please try again!`
         : `Something went wrong: ${err.message}`
     );
     const afterErr = store.getMessages(agentId);

@@ -352,6 +352,12 @@ function toOpenAIMessages(systemPrompt: string, messages: ChatMessage[]): OpenAI
   return converted;
 }
 
+function isReservationIntent(query: string): boolean {
+  return /\b(reserve|reservation|book|booking|table|dinner|lunch|brunch|restaurant)\b/i.test(
+    query ?? ''
+  );
+}
+
 export async function* streamChat(
   agentId: string,
   messages: ChatMessage[],
@@ -375,8 +381,11 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
   // Build the tools list based on agent + available context.
   const tools: any[] = [];
   const placesAllowed =
-    !!userLocation &&
-    (agentId === 'fitness' || agentId === 'travel' || agentId === 'lifestyle' || agentId === 'all');
+    // For Travel/Lifestyle/All, allow `search_places` even without GPS. Google
+    // Places Text Search can work without a location bias if the user provides
+    // a city/neighborhood in the query (e.g. "Shibuya Tokyo sushi").
+    // For Fitness, keep it location-gated to avoid "near me" without coordinates.
+    agentId === 'travel' || agentId === 'lifestyle' || agentId === 'all' || (agentId === 'fitness' && !!userLocation);
   const flightsAllowed = agentId === 'travel' || agentId === 'all';
   const hotelsAllowed = agentId === 'travel' || agentId === 'all';
   const fitnessClassesAllowed =
@@ -431,6 +440,7 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
       let fitnessProviderError: string | undefined;
       let reminderCreated: Reminder | null = null;
       let remindersListedCount = 0;
+      let lastPlacesQuery = '';
       const usedTools = new Set<string>();
 
       for (const tc of toolCalls) {
@@ -446,13 +456,16 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
         if (name === 'search_places' && placesAllowed) {
           usedTools.add('search_places');
           const query = (args.query || '').trim();
+          lastPlacesQuery = query;
           yield { type: 'activity', kind: 'search_places', detail: query || undefined };
           let places: Place[] = [];
           try {
             if (query) {
               places = await searchPlaces(query, {
-                lat: userLocation!.lat,
-                lng: userLocation!.lng,
+                // Location bias is optional — when GPS is unknown, Places still
+                // works if the query includes the city/neighborhood.
+                lat: userLocation?.lat,
+                lng: userLocation?.lng,
                 radiusMeters: args.radius_meters,
               });
             }
@@ -843,7 +856,9 @@ Do NOT invent specific businesses, studios, restaurants, hotels, flights, class 
         groundingParts.push(
           totalPlaces === 0
             ? 'search_places returned zero results — DO NOT invent businesses; tell the user no results and suggest widening the search.'
-            : 'Summarize places from search_places above. Only reference businesses in the tool result; do not add prices, phone numbers, or hours the tool did not return.'
+            : isReservationIntent(lastPlacesQuery)
+              ? 'Summarize places from search_places above. Only reference businesses in the tool result; do not add prices, phone numbers, or hours the tool did not return. The user is trying to book a reservation — explicitly tell them to use the booking links on the card (OpenTable / Resy / the official website / Google Maps) to reserve.'
+              : 'Summarize places from search_places above. Only reference businesses in the tool result; do not add prices, phone numbers, or hours the tool did not return.'
         );
       }
       if (usedTools.has('create_reminder')) {

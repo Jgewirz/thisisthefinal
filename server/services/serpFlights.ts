@@ -80,6 +80,9 @@ export async function searchFlightsFallback(
     departure_id: params.origin,
     arrival_id: params.destination,
     outbound_date: params.departDate,
+    // SerpAPI requires `return_date` when `type=1` (round trip). If the user
+    // didn't provide a return date, force one-way to avoid 400s.
+    type: params.returnDate ? '1' : '2',
     currency: (params.currency ?? 'USD').toUpperCase(),
     adults: String(params.adults ?? 1),
     hl: 'en',

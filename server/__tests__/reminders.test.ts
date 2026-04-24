@@ -171,6 +171,20 @@ describe('reminders service', () => {
     expect(all).toHaveLength(2);
   });
 
+  it('fails open (returns []) when DB query throws for list/due reads', async () => {
+    const { listReminders, getDueReminders, createReminder } = await import('../services/reminders.js');
+    await createReminder({ userId: 'u1', title: 't', dueAt: futureIso() });
+
+    // Force pool.query to throw after one success.
+    queryMock.mockRejectedValueOnce(new Error('Connection terminated due to connection timeout'));
+    const listed = await listReminders('u1');
+    expect(listed).toEqual([]);
+
+    queryMock.mockRejectedValueOnce(new Error('Connection terminated due to connection timeout'));
+    const due = await getDueReminders('u1', new Date());
+    expect(due).toEqual([]);
+  });
+
   it('deleteReminder returns false when not owned', async () => {
     const { createReminder, deleteReminder } = await import('../services/reminders.js');
     const r = await createReminder({ userId: 'u1', title: 't', dueAt: futureIso() });
