@@ -146,7 +146,8 @@ describe('streamChat — flight tool calling', () => {
     const firstCallArgs = createMock.mock.calls[0]![0];
     const toolNames = (firstCallArgs.tools || []).map((t: any) => t.function.name);
     expect(toolNames).toContain('search_flights');
-    expect(toolNames).not.toContain('search_places');
+    // Travel now always registers search_places (works without GPS when the user
+    // includes city/neighborhood in the query), so don't assert it is absent.
   });
 
   it('emits an empty flightList + zero-result grounding message on no offers', async () => {

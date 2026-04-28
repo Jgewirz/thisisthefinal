@@ -1,6 +1,6 @@
 import { createBrowserRouter } from "react-router";
 import { Root } from "./components/Root";
-import { ChatView } from "./components/ChatView";
+import { ChatView } from "../ui/screens/ChatView";
 import { LoginScreen } from "./components/LoginScreen";
 import { ForgotPasswordScreen } from "./components/ForgotPasswordScreen";
 import { ResetPasswordScreen } from "./components/ResetPasswordScreen";

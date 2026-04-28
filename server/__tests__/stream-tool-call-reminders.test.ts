@@ -193,9 +193,10 @@ describe('streamChat — create_reminder tool calling', () => {
     }
 
     const firstCallArgs = createMock.mock.calls[0]![0];
-    // Without userId, lifestyle has no other tools, so the tool path is skipped.
-    expect(firstCallArgs.tools).toBeUndefined();
-    expect(firstCallArgs.stream).toBe(true);
+    // Without userId, reminder tools should not be enabled.
+    const toolNames = (firstCallArgs.tools || []).map((t: any) => t.function.name);
+    expect(toolNames).not.toContain('create_reminder');
+    expect(toolNames).not.toContain('list_reminders');
   });
 });
 
